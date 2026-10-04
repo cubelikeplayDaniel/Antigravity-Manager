@@ -54,6 +54,10 @@ fn classify_rate_limit_reason(error_body: &str) -> crate::proxy::rate_limit::Rat
 }
 
 const IMAGE_ACCOUNT_RESELECT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+/// project_id 探测失败/超时时的回退值
+const DEFAULT_PROJECT_ID: &str = "bamboo-precept-lgxtn";
+/// project_id 探测失败后的负缓存时长
+const PROJECT_ID_NEGATIVE_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 
 async fn wait_for_image_account_change(
     changes: &mut tokio::sync::watch::Receiver<u64>,
@@ -155,6 +159,12 @@ pub struct TokenManager {
     // [NEW] 记录账号连续 invalid_grant 失败次数，防止单次偶发网络抖动误停用账号
     invalid_grant_failures: Arc<DashMap<String, u32>>,
 
+    // 按账号分配的 project_id 探测锁，与 refresh_locks 分离，避免被后台 OAuth 刷新阻塞而误触超时
+    project_id_locks: Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+
+    // project_id 探测失败的负缓存 (account_id -> 失败时刻)，TTL 内直接回退默认值，避免每次请求承受探测延迟
+    project_id_failures: Arc<DashMap<String, std::time::Instant>>,
+
     /// 支持优雅关闭时主动 abort 后台任务
     auto_cleanup_handle: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     proactive_refresh_handle: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
@@ -194,6 +204,8 @@ impl TokenManager {
             )),
             refresh_locks: Arc::new(DashMap::new()),
             invalid_grant_failures: Arc::new(DashMap::new()),
+            project_id_locks: Arc::new(DashMap::new()),
+            project_id_failures: Arc::new(DashMap::new()),
             auto_cleanup_handle: Arc::new(tokio::sync::Mutex::new(None)),
             proactive_refresh_handle: Arc::new(tokio::sync::Mutex::new(None)),
             cancel_token: CancellationToken::new(),
@@ -549,8 +561,12 @@ impl TokenManager {
             }
         }
 
-        let refresh_mu = self
-            .refresh_locks
+        if self.is_project_id_negatively_cached(account_id) {
+            return DEFAULT_PROJECT_ID.to_string();
+        }
+
+        let resolve_mu = self
+            .project_id_locks
             .entry(account_id.to_string())
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone();
@@ -560,9 +576,12 @@ impl TokenManager {
         let write_path = account_path.to_path_buf();
 
         let resolve_op = async {
-            let _guard = refresh_mu.lock().await;
+            let _guard = resolve_mu.lock().await;
 
-            // 获取锁后进行 Double-Check
+            // 获取锁后进行 Double-Check (含负缓存：等锁期间其他请求可能刚刚探测失败)
+            if self.is_project_id_negatively_cached(&acct_id) {
+                return DEFAULT_PROJECT_ID.to_string();
+            }
             let current_access_token = if let Some(entry) = self.tokens.get(&acct_id) {
                 if let Some(ref pid) = entry.project_id {
                     let trimmed = pid.trim();
@@ -579,6 +598,7 @@ impl TokenManager {
             match fetch_fut.await {
                 Ok(pid) => {
                     let trimmed = pid.trim().to_string();
+                    self.project_id_failures.remove(&acct_id);
                     if let Some(mut entry) = self.tokens.get_mut(&acct_id) {
                         entry.project_id = Some(trimmed.clone());
                     }
@@ -607,7 +627,9 @@ impl TokenManager {
                         e,
                         acct_id
                     );
-                    "bamboo-precept-lgxtn".to_string()
+                    self.project_id_failures
+                        .insert(acct_id.clone(), std::time::Instant::now());
+                    DEFAULT_PROJECT_ID.to_string()
                 }
             }
         };
@@ -620,9 +642,23 @@ impl TokenManager {
                     timeout_duration,
                     account_id
                 );
-                "bamboo-precept-lgxtn".to_string()
+                self.project_id_failures
+                    .insert(account_id.to_string(), std::time::Instant::now());
+                DEFAULT_PROJECT_ID.to_string()
             }
         }
+    }
+
+    /// project_id 负缓存是否仍在 TTL 内；过期条目顺带清理
+    fn is_project_id_negatively_cached(&self, account_id: &str) -> bool {
+        let expired = match self.project_id_failures.get(account_id) {
+            Some(failed_at) => failed_at.elapsed() >= PROJECT_ID_NEGATIVE_CACHE_TTL,
+            None => return false,
+        };
+        if expired {
+            self.project_id_failures.remove(account_id);
+        }
+        !expired
     }
 
     /// 从主应用账号目录加载所有账号
@@ -718,6 +754,10 @@ impl TokenManager {
         }
         self.health_scores.remove(account_id);
         self.rate_limit_tracker.clear(account_id);
+        self.refresh_locks.remove(account_id);
+        self.invalid_grant_failures.remove(account_id);
+        self.project_id_locks.remove(account_id);
+        self.project_id_failures.remove(account_id);
         self.session_accounts.retain(|_, v| v != account_id);
         if let Ok(mut preferred) = self.preferred_account_id.try_write() {
             if preferred.as_deref() == Some(account_id) {
@@ -4371,6 +4411,82 @@ mod tests {
                 ]}
             ]}
         })
+    }
+
+    #[test]
+    fn project_id_negative_cache_honors_ttl() {
+        let manager = TokenManager::new(PathBuf::new());
+        assert!(!manager.is_project_id_negatively_cached("acct"));
+
+        manager
+            .project_id_failures
+            .insert("acct".to_string(), std::time::Instant::now());
+        assert!(manager.is_project_id_negatively_cached("acct"));
+
+        let expired_at = std::time::Instant::now()
+            .checked_sub(PROJECT_ID_NEGATIVE_CACHE_TTL + Duration::from_secs(1))
+            .unwrap();
+        manager
+            .project_id_failures
+            .insert("acct".to_string(), expired_at);
+        assert!(!manager.is_project_id_negatively_cached("acct"));
+        assert!(!manager.project_id_failures.contains_key("acct"));
+    }
+
+    #[tokio::test]
+    async fn project_id_negative_cache_short_circuits_without_waiting_on_locks() {
+        let manager = TokenManager::new(PathBuf::new());
+        manager
+            .project_id_failures
+            .insert("acct".to_string(), std::time::Instant::now());
+
+        // 同时占住 OAuth 刷新锁与 project_id 探测锁：命中负缓存时不得等待任何一把锁
+        let refresh_mu = Arc::new(tokio::sync::Mutex::new(()));
+        manager
+            .refresh_locks
+            .insert("acct".to_string(), refresh_mu.clone());
+        let resolve_mu = Arc::new(tokio::sync::Mutex::new(()));
+        manager
+            .project_id_locks
+            .insert("acct".to_string(), resolve_mu.clone());
+        let _refresh_guard = refresh_mu.lock().await;
+        let _resolve_guard = resolve_mu.lock().await;
+
+        let pid = tokio::time::timeout(
+            Duration::from_millis(200),
+            manager.resolve_project_id_with_timeout(
+                "acct",
+                "token",
+                std::path::Path::new("/nonexistent/acct.json"),
+                Duration::from_secs(5),
+            ),
+        )
+        .await
+        .expect("negative cache hit must not block");
+        assert_eq!(pid, DEFAULT_PROJECT_ID);
+    }
+
+    #[test]
+    fn remove_account_clears_per_account_lock_and_failure_state() {
+        let manager = TokenManager::new(PathBuf::new());
+        let id = "acct".to_string();
+        manager
+            .refresh_locks
+            .insert(id.clone(), Arc::new(tokio::sync::Mutex::new(())));
+        manager.invalid_grant_failures.insert(id.clone(), 1);
+        manager
+            .project_id_locks
+            .insert(id.clone(), Arc::new(tokio::sync::Mutex::new(())));
+        manager
+            .project_id_failures
+            .insert(id.clone(), std::time::Instant::now());
+
+        manager.remove_account(&id);
+
+        assert!(!manager.refresh_locks.contains_key(&id));
+        assert!(!manager.invalid_grant_failures.contains_key(&id));
+        assert!(!manager.project_id_locks.contains_key(&id));
+        assert!(!manager.project_id_failures.contains_key(&id));
     }
 
     #[tokio::test]
