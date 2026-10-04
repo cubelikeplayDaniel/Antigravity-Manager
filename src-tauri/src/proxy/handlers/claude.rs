@@ -57,6 +57,22 @@ struct CoworkManualCompactState {
 
 static COWORK_MANUAL_COMPACT_SESSIONS: LazyLock<DashMap<String, CoworkManualCompactState>> =
     LazyLock::new(DashMap::new);
+const MAX_MANUAL_COMPACT_SESSIONS_CAPACITY: usize = 1000;
+
+/// 近期触发压缩（手动或自动）的会话集合 (Session -> 触发时刻)，用于跨轮次对齐
+static PENDING_COMPACT_SESSIONS: LazyLock<DashMap<String, std::time::Instant>> =
+    LazyLock::new(DashMap::new);
+
+fn prune_manual_compact_sessions_if_needed() {
+    if COWORK_MANUAL_COMPACT_SESSIONS.len() >= MAX_MANUAL_COMPACT_SESSIONS_CAPACITY {
+        let now = std::time::Instant::now();
+        COWORK_MANUAL_COMPACT_SESSIONS
+            .retain(|_, state| now.duration_since(state.ts).as_secs() < 300);
+        if COWORK_MANUAL_COMPACT_SESSIONS.len() >= MAX_MANUAL_COMPACT_SESSIONS_CAPACITY {
+            COWORK_MANUAL_COMPACT_SESSIONS.clear();
+        }
+    }
+}
 
 /// 刚刚完成 compact 的会话防重放缓存 (Session -> (完成时间戳, 回显文本, 剩余Token量))
 static COWORK_JUST_COMPACTED_CACHE: LazyLock<DashMap<String, (std::time::Instant, String, u32)>> =
@@ -133,7 +149,17 @@ fn calculate_claude_fixed_overhead(request: &ClaudeRequest) -> u32 {
         for tool in tools {
             let name_len =
                 crate::proxy::pipeline::estimator::estimate_tokens_from_str(&tool.get_name());
-            overhead += name_len + 60;
+            let desc_len = tool
+                .description
+                .as_deref()
+                .map(|d| crate::proxy::pipeline::estimator::estimate_tokens_from_str(d))
+                .unwrap_or(0);
+            let schema_len = tool
+                .input_schema
+                .as_ref()
+                .map(|s| crate::proxy::pipeline::estimator::estimate_tokens(s))
+                .unwrap_or(0);
+            overhead += name_len + desc_len + schema_len + 30;
         }
     }
     overhead
@@ -962,6 +988,25 @@ pub async fn handle_messages(
                 consumed: false,
             },
         );
+
+        // 跨轮次关联对齐：遍历近期处于 compacting 状态的会话，同步发放租约并确认为已完成摘要
+        // 解决客户端摘要请求因 tools/system 变动导致 extract_session_id 发生哈希偏移的问题
+        PENDING_COMPACT_SESSIONS.retain(|_, ts| now.duration_since(*ts).as_secs() < 120);
+        for entry in PENDING_COMPACT_SESSIONS.iter() {
+            let pending_sid = entry.key();
+            COMPACTION_IMMUNITY_LEASES.insert(
+                pending_sid.clone(),
+                CompactionImmunityLease {
+                    created_at: now,
+                    last_touched: now,
+                    consumed: false,
+                },
+            );
+            if let Some(mut state) = COWORK_MANUAL_COMPACT_SESSIONS.get_mut(pending_sid) {
+                state.summary_done = true;
+            }
+        }
+
         if experimental.enable_cowork_manual_compact {
             if let Some(mut state) = COWORK_MANUAL_COMPACT_SESSIONS.get_mut(&session_key) {
                 state.summary_done = true;
@@ -1015,10 +1060,10 @@ pub async fn handle_messages(
             } else {
                 drop(lease);
                 COMPACTION_IMMUNITY_LEASES.remove(&session_key);
-                is_continuation_detected
+                false
             }
         } else {
-            is_continuation_detected
+            false
         }
     } else {
         false
@@ -1048,7 +1093,6 @@ pub async fn handle_messages(
         let now = std::time::Instant::now();
         let req_model = request.model.clone();
         let est_tokens = crate::proxy::pipeline::estimate_tokens(&original_body);
-        let num_msgs = request.messages.len();
 
         // 情况 A: 60秒内刚完成过 compact，命中防重放缓存
         if let Some(entry) = COWORK_JUST_COMPACTED_CACHE.get(&session_key) {
@@ -1109,9 +1153,8 @@ pub async fn handle_messages(
                 else if is_post_compaction || is_continuation_detected {
                     is_truly_compacted = true;
                 }
-                // 条件 3: 上下文 tokens 明显回落（回落至 85% 以下）或消息数削减至 50 以内
-                else if before_tok > 0 && (est_tokens < (before_tok * 85 / 100) || num_msgs < 50)
-                {
+                // 条件 3: 上下文 tokens 明显回落（回落至 85% 以下）
+                else if before_tok > 0 && est_tokens < (before_tok * 85 / 100) {
                     is_truly_compacted = true;
                 }
             }
@@ -1127,6 +1170,7 @@ pub async fn handle_messages(
             };
 
             COWORK_MANUAL_COMPACT_SESSIONS.remove(&session_key);
+            PENDING_COMPACT_SESSIONS.remove(&session_key);
             if COWORK_JUST_COMPACTED_CACHE.len() >= MAX_JUST_COMPACTED_CACHE_CAPACITY {
                 let purge_now = std::time::Instant::now();
                 COWORK_JUST_COMPACTED_CACHE
@@ -1169,6 +1213,7 @@ pub async fn handle_messages(
 
         // 情况 C: 初次捕获 ./compact 指令，或处于客户端网络级即时重试阶段
         // 持续响应 400 假报警，直到驱动客户端彻底触发 Reactive Compact
+        prune_manual_compact_sessions_if_needed();
         if !COWORK_MANUAL_COMPACT_SESSIONS.contains_key(&session_key) {
             COWORK_MANUAL_COMPACT_SESSIONS.insert(
                 session_key.clone(),
@@ -1184,6 +1229,7 @@ pub async fn handle_messages(
                 entry.before_tokens = est_tokens;
             }
         }
+        PENDING_COMPACT_SESSIONS.insert(session_key.clone(), now);
 
         let fixed_overhead = calculate_claude_fixed_overhead(&request);
         let target_limit = (fixed_overhead + 15_000).max(35_000);
@@ -1272,6 +1318,7 @@ pub async fn handle_messages(
                     est_tokens,
                     threshold
                 );
+                PENDING_COMPACT_SESSIONS.insert(session_key.clone(), std::time::Instant::now());
                 let report_tokens = est_tokens.max(target_limit + 10_000);
                 let err_msg = format!(
                     "prompt is too long: {} tokens > {} maximum",
@@ -3592,5 +3639,119 @@ mod warmup_tests {
         // Heartbeat ping
         let heartbeat = b": ping\n\n";
         assert!(!claude_stream_chunk_has_error_event(heartbeat));
+    }
+
+    #[test]
+    fn test_calculate_claude_fixed_overhead_includes_schema_and_description() {
+        use crate::proxy::mappers::claude::models::Tool;
+
+        let req_without_schema = ClaudeRequest {
+            model: "claude-3-7-sonnet".to_string(),
+            messages: vec![],
+            system: None,
+            tools: Some(vec![Tool {
+                type_: None,
+                name: Some("test_tool".to_string()),
+                description: None,
+                input_schema: None,
+            }]),
+            ..Default::default()
+        };
+        let overhead_small = calculate_claude_fixed_overhead(&req_without_schema);
+
+        let large_schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "param1": {"type": "string", "description": "A very detailed description of parameter one that takes up lots of tokens"},
+                "param2": {"type": "array", "items": {"type": "string"}, "description": "Another parameter with deep nested definitions"},
+                "param3": {"type": "object", "properties": {"nested": {"type": "boolean"}}}
+            },
+            "required": ["param1"]
+        });
+
+        let req_with_schema = ClaudeRequest {
+            model: "claude-3-7-sonnet".to_string(),
+            messages: vec![],
+            system: None,
+            tools: Some(vec![Tool {
+                type_: None,
+                name: Some("test_tool".to_string()),
+                description: Some("This is a comprehensive description of the tool that explains its purpose and behavior in great detail.".to_string()),
+                input_schema: Some(large_schema),
+            }]),
+            ..Default::default()
+        };
+        let overhead_large = calculate_claude_fixed_overhead(&req_with_schema);
+
+        assert!(
+            overhead_large > overhead_small + 50,
+            "Overhead must properly include tool descriptions and input_schemas"
+        );
+    }
+
+    #[test]
+    fn test_manual_compact_sessions_capacity_and_prune() {
+        for i in 0..1010 {
+            COWORK_MANUAL_COMPACT_SESSIONS.insert(
+                format!("test_cap_session_{}", i),
+                CoworkManualCompactState {
+                    before_tokens: 50_000,
+                    ts: std::time::Instant::now() - std::time::Duration::from_secs(350),
+                    summary_done: false,
+                },
+            );
+        }
+
+        prune_manual_compact_sessions_if_needed();
+        assert!(
+            COWORK_MANUAL_COMPACT_SESSIONS.len() <= MAX_MANUAL_COMPACT_SESSIONS_CAPACITY,
+            "Pruning must enforce capacity limit and evict timed-out entries"
+        );
+    }
+
+    #[test]
+    fn test_compaction_lease_expiration_does_not_fall_back_to_weak_continuation() {
+        let session_key = "test_lease_no_weak_fallback".to_string();
+        COMPACTION_IMMUNITY_LEASES.insert(
+            session_key.clone(),
+            CompactionImmunityLease {
+                created_at: std::time::Instant::now() - std::time::Duration::from_secs(100),
+                last_touched: std::time::Instant::now() - std::time::Duration::from_secs(50),
+                consumed: true,
+            },
+        );
+
+        let is_compaction_request = false;
+        let is_post_compaction = if !is_compaction_request {
+            if let Some(mut lease) = COMPACTION_IMMUNITY_LEASES.get_mut(&session_key) {
+                let now = std::time::Instant::now();
+                let valid = if !lease.consumed {
+                    now.duration_since(lease.created_at).as_secs()
+                        < COMPACTION_IMMUNITY_INITIAL_TTL_SECS
+                } else {
+                    now.duration_since(lease.last_touched).as_secs()
+                        < COMPACTION_IMMUNITY_WINDOW_SECS
+                };
+                if valid {
+                    lease.consumed = true;
+                    lease.last_touched = now;
+                    true
+                } else {
+                    drop(lease);
+                    COMPACTION_IMMUNITY_LEASES.remove(&session_key);
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        assert!(
+            !is_post_compaction,
+            "Expired lease must strictly return false without granting permanent immunity"
+        );
+        assert!(!COMPACTION_IMMUNITY_LEASES.contains_key(&session_key));
     }
 }
