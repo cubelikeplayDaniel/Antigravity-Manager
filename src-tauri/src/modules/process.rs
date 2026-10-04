@@ -1326,6 +1326,29 @@ pub fn start_antigravity(target_ide: Option<&str>) -> Result<(), String> {
     start_antigravity_with_fallback_path(target_ide, None, None)
 }
 
+/// 判断进程特征是否属于目标客户端：IDE 需任一特征命中 IDE 命名；
+/// 经典版需包含 antigravity 且所有特征都不带 IDE 命名，避免 IDE 实例被误判为经典版
+fn matches_target_client(target_ide: Option<&str>, features: &[&str]) -> bool {
+    let any_ide = features.iter().any(|f| is_antigravity_ide_str(f));
+    if target_ide == Some("ide") {
+        any_ide
+    } else {
+        !any_ide && features.iter().any(|f| f.contains("antigravity"))
+    }
+}
+
+/// 沿路径组件向上定位最外层 `.app` 包目录，按组件而非字节偏移切分，兼容非 ASCII 路径
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn app_bundle_root(exe: &std::path::Path) -> Option<std::path::PathBuf> {
+    exe.ancestors()
+        .filter(|p| {
+            p.extension()
+                .is_some_and(|ext| ext.to_string_lossy().eq_ignore_ascii_case("app"))
+        })
+        .last()
+        .map(std::path::Path::to_path_buf)
+}
+
 fn get_process_info(target_ide: Option<&str>) -> (Option<std::path::PathBuf>, Option<Vec<String>>) {
     let mut system = System::new_all();
     system.refresh_all();
@@ -1353,10 +1376,12 @@ fn get_process_info(target_ide: Option<&str>) -> (Option<std::path::PathBuf>, Op
         // Get executable path and command line arguments
         if let Some(exe) = process.exe() {
             let mut args = process.cmd().iter();
-            let exe_path = args
+            // 身份判定以内核报告的真实可执行路径为准；argv[0] 可被启动方任意改写，仅作辅助特征
+            let exe_path = exe.to_string_lossy().to_lowercase();
+            let argv0 = args
                 .next()
-                .map_or(exe.to_string_lossy(), |arg| arg.to_string_lossy())
-                .to_lowercase();
+                .map(|arg| arg.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
 
             // Extract actual arguments from command line (skipping exe path)
             let args = args
@@ -1366,7 +1391,8 @@ fn get_process_info(target_ide: Option<&str>) -> (Option<std::path::PathBuf>, Op
             let args_str = args.join(" ");
 
             // Common helper process exclusion logic (strictly excludes language_server and sub-processes)
-            let is_helper = is_helper_process(&name, &args_str, &exe_path);
+            let is_helper = is_helper_process(&name, &args_str, &exe_path)
+                || is_helper_process(&name, &args_str, &argv0);
 
             // Sanitize snapshot arguments to prevent engine parameters like --standalone from leaking into relaunch
             let clean_args = sanitize_restart_args(&args);
@@ -1374,22 +1400,14 @@ fn get_process_info(target_ide: Option<&str>) -> (Option<std::path::PathBuf>, Op
             let args = Some(clean_args);
 
             // Is the process a match for target_ide?
-            let is_ide_match = if target_ide == Some("ide") {
-                is_antigravity_ide_str(&exe_path) || is_antigravity_ide_str(&name)
-            } else {
-                (exe_path.contains("antigravity") || name.contains("antigravity"))
-                    && !is_antigravity_ide_str(&exe_path)
-                    && !is_antigravity_ide_str(&name)
-            };
+            let is_ide_match = matches_target_client(target_ide, &[&exe_path, &argv0, &name]);
 
             if is_ide_match && !is_helper {
                 #[cfg(target_os = "macos")]
                 {
                     if !exe_path.contains("frameworks") {
-                        if let Some(app_idx) = exe_path.find(".app") {
-                            let app_path_str = &exe.to_string_lossy()[..app_idx + 4];
-                            let path = Some(std::path::PathBuf::from(app_path_str));
-                            return (path, args);
+                        if let Some(app_root) = app_bundle_root(exe) {
+                            return (Some(app_root), args);
                         }
                     }
                     return (path, args);
@@ -1766,6 +1784,45 @@ pub fn get_antigravity_cli_executable_path() -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn matches_target_client_prefers_ide_markers_from_any_feature() {
+        // argv[0] 被改写为经典版名称，但真实 exe 位于 IDE 包内
+        let features = [
+            "/applications/antigravity ide.app/contents/macos/electron",
+            "antigravity",
+            "electron",
+        ];
+        assert!(matches_target_client(Some("ide"), &features));
+        assert!(!matches_target_client(None, &features));
+
+        let classic = [
+            "/applications/antigravity.app/contents/macos/electron",
+            "/applications/antigravity.app/contents/macos/electron",
+            "electron",
+        ];
+        assert!(matches_target_client(None, &classic));
+        assert!(!matches_target_client(Some("ide"), &classic));
+    }
+
+    #[test]
+    fn app_bundle_root_splits_by_component() {
+        use std::path::{Path, PathBuf};
+        assert_eq!(
+            app_bundle_root(Path::new(
+                "/Applications/Antigravity IDE.app/Contents/MacOS/Electron"
+            )),
+            Some(PathBuf::from("/Applications/Antigravity IDE.app"))
+        );
+        // 非 ASCII 目录与嵌套 .app：取最外层包，且不会因字节偏移 panic
+        assert_eq!(
+            app_bundle_root(Path::new(
+                "/Users/用户/应用/Antigravity.APP/Contents/Frameworks/Helper.app/Contents/MacOS/Helper"
+            )),
+            Some(PathBuf::from("/Users/用户/应用/Antigravity.APP"))
+        );
+        assert_eq!(app_bundle_root(Path::new("/usr/bin/antigravity")), None);
+    }
 
     #[test]
     fn test_is_client_executable_missing() {
