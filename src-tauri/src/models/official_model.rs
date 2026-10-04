@@ -191,6 +191,16 @@ impl OfficialModelCatalog {
         let mut found = Vec::new();
         let mut seen = std::collections::HashSet::new();
 
+        // 不完整的大版本基准（如 claude-opus-5、claude-sonnet-5、claude-3-opus）缺少次版本，不是完整档位基准
+        if base_lower.starts_with("claude-") {
+            let parts: Vec<&str> = base_lower.split('-').collect();
+            if (parts.len() == 3 && parts[2].chars().all(|c| c.is_ascii_digit()))
+                || (parts.len() == 3 && parts[1].chars().all(|c| c.is_ascii_digit()))
+            {
+                return found;
+            }
+        }
+
         // 1. 探测已知标准档位标识符（支持别名解析与映射匹配）
         for tier in KNOWN_TIER_SUFFIXES {
             let candidate = format!("{}-{}", base_lower, tier);
