@@ -482,12 +482,16 @@ impl TokenManager {
                     let is_grant_error =
                         e.contains("\"invalid_grant\"") || e.contains("invalid_grant");
                     if is_grant_error {
-                        let mut fail_count = self
-                            .invalid_grant_failures
-                            .entry(account_id.to_string())
-                            .or_insert(0);
-                        *fail_count += 1;
-                        let current_fails = *fail_count;
+                        // 计数后立即释放 DashMap 分片写锁：后续 disable_account().await 与
+                        // remove() 会再次访问同一分片，持锁跨越将导致自死锁
+                        let current_fails = {
+                            let mut fail_count = self
+                                .invalid_grant_failures
+                                .entry(account_id.to_string())
+                                .or_insert(0);
+                            *fail_count += 1;
+                            *fail_count
+                        };
                         if current_fails >= 2 {
                             tracing::error!(
                                 "账号 {} 连续 {} 次确认为 invalid_grant，正式执行停用",
