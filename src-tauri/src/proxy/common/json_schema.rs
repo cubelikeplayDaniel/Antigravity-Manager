@@ -537,17 +537,34 @@ fn clean_json_schema_recursive(value: &mut Value, is_schema_node: bool, depth: u
                     }
                 }
 
-                // 9. Enum 值强制转字符串
-                if let Some(Value::Array(arr)) = map.get_mut("enum") {
-                    for item in arr {
-                        if !item.is_string() {
-                            *item = Value::String(if item.is_null() {
-                                "null".to_string()
-                            } else {
-                                item.to_string()
-                            });
+                // 9. [FIX #2041] Enum 强制规范化为符合 Gemini Protobuf 约束的形式：
+                // a. Enum 元素强制转字符串，并剔除空字符串 (Gemini 约束: Schema.enum[i]: cannot be empty)
+                // b. 若剔除后数组为空，则移除 enum 属性
+                // c. Gemini Protobuf 约束 Schema.enum: only allowed for STRING type，因此包含有效 enum 的字段其 type 必须归一化为 string
+                let mut has_valid_enum = false;
+                if let Some(enum_val) = map.get_mut("enum") {
+                    if let Value::Array(arr) = enum_val {
+                        for item in arr.iter_mut() {
+                            if !item.is_string() {
+                                *item = Value::String(if item.is_null() {
+                                    "null".to_string()
+                                } else {
+                                    item.to_string()
+                                });
+                            }
                         }
+                        // 剔除空字符串元素
+                        arr.retain(|item| item.as_str().map(|s| !s.is_empty()).unwrap_or(false));
+                        has_valid_enum = !arr.is_empty();
                     }
+                }
+                if let Some(Value::Array(arr)) = map.get("enum") {
+                    if arr.is_empty() {
+                        map.remove("enum");
+                    }
+                }
+                if has_valid_enum {
+                    map.insert("type".to_string(), Value::String("string".to_string()));
                 }
             }
         }
@@ -1674,11 +1691,11 @@ mod tests {
         );
         assert!(schema1["properties"]["action_type"].get("const").is_none());
 
-        assert_eq!(schema1["properties"]["count"]["type"], "integer");
+        assert_eq!(schema1["properties"]["count"]["type"], "string");
         assert_eq!(schema1["properties"]["count"]["enum"], json!(["5"]));
         assert!(schema1["properties"]["count"].get("const").is_none());
 
-        assert_eq!(schema1["properties"]["enabled"]["type"], "boolean");
+        assert_eq!(schema1["properties"]["enabled"]["type"], "string");
         assert_eq!(schema1["properties"]["enabled"]["enum"], json!(["true"]));
         assert!(schema1["properties"]["enabled"].get("const").is_none());
 
@@ -1784,5 +1801,51 @@ mod tests {
         assert_eq!(schema["type"], "object");
         assert_eq!(schema["properties"], json!({}));
         assert_eq!(schema["description"], "Some description\nwith newlines");
+    }
+
+    #[test]
+    fn test_issue_2041_gemini_enum_string_and_non_empty_constraints() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "safesearch": {
+                    "type": "string",
+                    "enum": ["", "moderate", "strict"]
+                },
+                "level": {
+                    "type": "integer",
+                    "enum": [1, 2, 3]
+                },
+                "active": {
+                    "type": "boolean",
+                    "enum": [true]
+                },
+                "empty_only": {
+                    "type": "string",
+                    "enum": [""]
+                }
+            }
+        });
+
+        clean_json_schema(&mut schema);
+
+        // 1. 空字符串 enum 必须被剔除 (Gemini: Schema.enum[i]: cannot be empty)
+        assert_eq!(
+            schema["properties"]["safesearch"]["enum"],
+            json!(["moderate", "strict"])
+        );
+
+        // 2. 剔除空字符串后若 enum 为空，则必须移除 enum 字段
+        assert!(schema["properties"]["empty_only"].get("enum").is_none());
+
+        // 3. 非 string 类型如果包含 enum，类型必须归一化为 string (Gemini: Schema.enum: only allowed for STRING type)
+        assert_eq!(schema["properties"]["level"]["type"], "string");
+        assert_eq!(
+            schema["properties"]["level"]["enum"],
+            json!(["1", "2", "3"])
+        );
+
+        assert_eq!(schema["properties"]["active"]["type"], "string");
+        assert_eq!(schema["properties"]["active"]["enum"], json!(["true"]));
     }
 }
