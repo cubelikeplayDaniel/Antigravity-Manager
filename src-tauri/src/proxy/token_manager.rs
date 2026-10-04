@@ -1326,20 +1326,27 @@ impl TokenManager {
         let account: serde_json::Value = serde_json::from_str(&content).ok()?;
         let models = account.get("quota")?.get("models")?.as_array()?;
 
+        let mut legacy_claude_quota = None;
         for model in models {
             if let Some(name) = model.get("name").and_then(|v| v.as_str()) {
-                if crate::proxy::common::model_mapping::normalize_to_standard_id(name)
-                    .unwrap_or_else(|| name.to_string())
-                    == model_name
-                {
+                let norm = crate::proxy::common::model_mapping::normalize_to_standard_id(name)
+                    .unwrap_or_else(|| name.to_string());
+                if norm == model_name {
                     return model
+                        .get("percentage")
+                        .and_then(|v| v.as_i64())
+                        .map(|p| p as i32);
+                }
+                // 向后兼容：若查询特定 Claude 家族 (如 claude-opus) 且尚未精确命中，当存在历史统一的 "claude" 配额时暂存作为兜底
+                if model_name.starts_with("claude-") && (norm == "claude" || name == "claude") {
+                    legacy_claude_quota = model
                         .get("percentage")
                         .and_then(|v| v.as_i64())
                         .map(|p| p as i32);
                 }
             }
         }
-        None
+        legacy_claude_quota
     }
 
     fn get_available_models_from_json(account_path: &PathBuf) -> Option<HashSet<String>> {

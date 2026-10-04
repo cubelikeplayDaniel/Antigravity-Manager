@@ -517,6 +517,11 @@ impl DynamicTierRouter {
             clean.clone()
         };
 
+        // 1.5 过滤非活跃或未达基准线的模型（淘汰模型由系统映射重定向接管，不在此动态衍生）
+        if !crate::proxy::common::model_mapping::is_model_compliant_with_baseline(&base) {
+            return None;
+        }
+
         // 2. 动态收集属于该 base 模型的所有可用档位后缀
         let available_tiers = crate::models::OfficialModelCatalog::collect_tiers_for_base(&base);
 
@@ -584,7 +589,8 @@ pub fn resolve_bare_flash_route(model: &str, client_effort: Option<&str>) -> Opt
 pub fn normalize_client_thinking_level(effort: &str) -> Option<&'static str> {
     let clean = effort.trim().to_lowercase().replace('_', "-");
     match clean.as_str() {
-        "low" | "extra-low" | "min" | "minimal" | "lite" => Some("LOW"),
+        "low" | "extra-low" | "min" | "minimal" | "lite" | "flash-lite" | "disabled" | "off"
+        | "none" => Some("LOW"),
         "medium" | "normal" | "standard" => Some("MEDIUM"),
         "high" | "xhigh" | "x-high" | "max" | "extreme" => Some("HIGH"),
         _ => None,
@@ -1131,6 +1137,9 @@ mod tests {
         assert_eq!(normalize_client_thinking_level("x-high"), Some("HIGH"));
         assert_eq!(normalize_client_thinking_level("flash_lite"), Some("LOW"));
         assert_eq!(normalize_client_thinking_level("lite"), Some("LOW"));
+        assert_eq!(normalize_client_thinking_level("disabled"), Some("LOW"));
+        assert_eq!(normalize_client_thinking_level("off"), Some("LOW"));
+        assert_eq!(normalize_client_thinking_level("none"), Some("LOW"));
         assert_eq!(normalize_client_thinking_level("medium"), Some("MEDIUM"));
 
         // 权重梯队兼容下划线

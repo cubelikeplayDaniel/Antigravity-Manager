@@ -140,6 +140,27 @@ pub fn canonicalize_claude_client_model_id(input: &str) -> String {
             i += 1;
         }
     }
+
+    // 规范化 Claude 5 裸大版本标识至基准版本 (如 claude-opus-5 -> claude-opus-5-5, claude-opus-5-low -> claude-opus-5-5-low)
+    for family in ["opus", "sonnet", "haiku"] {
+        let bare = format!("claude-{}-5", family);
+        if out == bare {
+            out = format!("claude-{}-5-5", family);
+        } else if let Some(rest) = out.strip_prefix(&format!("{}-", bare)) {
+            if !rest.starts_with(|c: char| c.is_ascii_digit()) {
+                out = format!("claude-{}-5-5-{}", family, rest);
+            }
+        }
+        let reversed_bare = format!("claude-5-{}", family);
+        if out == reversed_bare {
+            out = format!("claude-{}-5-5", family);
+        } else if let Some(rest) = out.strip_prefix(&format!("{}-", reversed_bare)) {
+            if !rest.starts_with(|c: char| c.is_ascii_digit()) {
+                out = format!("claude-{}-5-5-{}", family, rest);
+            }
+        }
+    }
+
     out
 }
 
@@ -641,13 +662,11 @@ pub fn resolve_model_route(
 /// - `custom_mapping`: 用户自定义映射表
 /// - `client_effort`: 客户端传入的思考档位（如 "low", "medium", "high"）
 ///
-/// # 返回
-/// 映射后的目标模型名称
-pub fn resolve_model_route_with_effort(
+/// 仅从自定义映射与热更新重定向规则中解析模型路由（若未匹配自定义规则则返回 None）
+pub fn resolve_custom_model_route(
     original_model: &str,
     custom_mapping: &std::collections::HashMap<String, String>,
-    client_effort: Option<&str>,
-) -> String {
+) -> Option<String> {
     // 0. API 热更新废弃模型转发 (最高物理优先级，强制纠正)
     // 如果用户非要用已经被移除的模型，并且官方下发了 fallback path，我们在此拦截并纠正
     if let Some(forwarded) = DYNAMIC_MODEL_FORWARDING_RULES.get(original_model) {
@@ -656,16 +675,46 @@ pub fn resolve_model_route_with_effort(
             original_model,
             forwarded.value()
         ));
-        return forwarded.value().clone();
+        return Some(forwarded.value().clone());
     }
 
-    // 1. 精确匹配 (次高优先级)
+    // 1. 自定义映射匹配 (次高优先级：精确匹配 -> 大小写不敏感匹配 -> 规范化 ID 匹配)
     if let Some(target) = custom_mapping.get(original_model) {
         crate::modules::logger::log_info(&format!(
             "[Router] 精确映射: {} -> {}",
             original_model, target
         ));
-        return target.clone();
+        return Some(target.clone());
+    }
+
+    let original_lower = original_model.to_lowercase();
+    for (k, target) in custom_mapping.iter() {
+        if k.to_lowercase() == original_lower {
+            crate::modules::logger::log_info(&format!(
+                "[Router] 自定义映射(大小写不敏感): {} -> {}",
+                original_model, target
+            ));
+            return Some(target.clone());
+        }
+    }
+
+    let canonical = canonicalize_claude_client_model_id(original_model);
+    if let Some(target) = custom_mapping.get(&canonical) {
+        crate::modules::logger::log_info(&format!(
+            "[Router] 自定义映射(规范化): {} -> {}",
+            original_model, target
+        ));
+        return Some(target.clone());
+    }
+    for (k, target) in custom_mapping.iter() {
+        let k_canonical = canonicalize_claude_client_model_id(k);
+        if k_canonical == canonical || k.to_lowercase() == canonical {
+            crate::modules::logger::log_info(&format!(
+                "[Router] 自定义映射(规范化对齐): {} -> {}",
+                original_model, target
+            ));
+            return Some(target.clone());
+        }
     }
 
     // 2. Wildcard match - most specific (highest non-wildcard chars) wins
@@ -675,7 +724,10 @@ pub fn resolve_model_route_with_effort(
     let mut best_match: Option<(&str, &str, usize)> = None;
 
     for (pattern, target) in custom_mapping.iter() {
-        if pattern.contains('*') && wildcard_match(pattern, original_model) {
+        if pattern.contains('*')
+            && (wildcard_match(pattern, original_model)
+                || wildcard_match(&pattern.to_lowercase(), &original_lower))
+        {
             let specificity = pattern.chars().count() - pattern.matches('*').count();
             if best_match.is_none() || specificity > best_match.unwrap().2 {
                 best_match = Some((pattern.as_str(), target.as_str(), specificity));
@@ -688,7 +740,29 @@ pub fn resolve_model_route_with_effort(
             "[Router] Wildcard match: {} -> {} (rule: {})",
             original_model, target, pattern
         ));
-        return target.to_string();
+        return Some(target.to_string());
+    }
+
+    None
+}
+
+/// 解析完整的模型路由（支持官方淘汰重定向、用户自定义映射、通配符映射、物理 ID 透传以及依据客户端思考档位进行通用裸模型解析）
+///
+/// # 参数
+/// * `original_model` - 原始模型名称
+/// * `custom_mapping` - 用户自定义映射表
+/// * `client_effort` - 客户端指定的思考强度/档位（如 Some("low"), Some("high") 等）
+///
+/// # 返回
+/// 映射后的目标模型名称
+pub fn resolve_model_route_with_effort(
+    original_model: &str,
+    custom_mapping: &std::collections::HashMap<String, String>,
+    client_effort: Option<&str>,
+) -> String {
+    // 0 & 1 & 2. 优先匹配淘汰重定向与自定义映射（精确、大小写、规范化、通配符）
+    if let Some(custom) = resolve_custom_model_route(original_model, custom_mapping) {
+        return custom;
     }
 
     // 3. 系统默认映射
@@ -780,12 +854,20 @@ pub fn normalize_to_standard_id(model_name: &str) -> Option<String> {
         return Some("gemini-3-pro-high".to_string());
     }
 
-    // 4. Claude 系列 (合并 Opus, Sonnet, Haiku 为统一保护组 'claude')
-    if lower.contains("claude")
-        || lower.contains("opus")
-        || lower.contains("sonnet")
-        || lower.contains("haiku")
-    {
+    // 5. Claude 系列 (Issue #3506: 解耦 Opus, Sonnet, Haiku, Fable 为独立保护组，避免单模型 429 熔断整池)
+    if lower.contains("opus") {
+        return Some("claude-opus".to_string());
+    }
+    if lower.contains("sonnet") {
+        return Some("claude-sonnet".to_string());
+    }
+    if lower.contains("haiku") {
+        return Some("claude-haiku".to_string());
+    }
+    if lower.contains("fable") {
+        return Some("claude-fable".to_string());
+    }
+    if lower.contains("claude") {
         return Some("claude".to_string());
     }
 
@@ -942,7 +1024,7 @@ mod tests {
         let empty = HashMap::new();
         assert_eq!(
             resolve_model_route("gemini-3.1-pro-high", &empty),
-            "gemini-pro-agent"
+            "gemini-3.1-pro-high"
         );
         assert_eq!(
             resolve_model_route("gemini-pro-agent", &empty),
@@ -995,14 +1077,14 @@ mod tests {
             "gemini-3.1-flash-lite"
         );
 
-        // Test Normalization (Opus 4.6 now merged into "claude" group)
+        // Test Normalization (Issue #3506: Opus, Sonnet decoupled into independent protection buckets)
         assert_eq!(
             normalize_to_standard_id("claude-opus-4-6-thinking"),
-            Some("claude".to_string())
+            Some("claude-opus".to_string())
         );
         assert_eq!(
             normalize_to_standard_id("claude-sonnet-4-5"),
-            Some("claude".to_string())
+            Some("claude-sonnet".to_string())
         );
 
         // [Regression] gemini-3-pro-image must NOT be grouped with gemini-3-pro-high
@@ -1167,20 +1249,19 @@ mod tests {
         assert!(!is_model_compliant_with_baseline("gpt-4"));
         assert!(!is_model_compliant_with_baseline("gpt-3.5-turbo"));
 
-        // Gemini Flash: >= 3.5 passes, 3.1-flash-lite passes, 2.5 rejected, 3.5-flash-lite rejected
+        // Gemini Flash: >= 3.5 passes, 3.1-flash-lite & 3.5-flash-lite pass, 2.5/1.5/2.0 rejected
         assert!(is_model_compliant_with_baseline("gemini-3.8-flash-high"));
         assert!(is_model_compliant_with_baseline("gemini-3.7-flash-medium"));
         assert!(is_model_compliant_with_baseline("gemini-3.6-flash-low"));
         assert!(is_model_compliant_with_baseline("gemini-3.5-flash-low"));
         assert!(is_model_compliant_with_baseline("gemini-3.10-flash-high"));
         assert!(is_model_compliant_with_baseline("gemini-3.1-flash-lite"));
+        assert!(is_model_compliant_with_baseline("gemini-3.5-flash-lite"));
         assert!(!is_model_compliant_with_baseline("gemini-2.5-flash"));
         assert!(!is_model_compliant_with_baseline("gemini-2.5-flash-lite"));
         assert!(!is_model_compliant_with_baseline(
             "gemini-2.5-flash-thinking"
         ));
-        assert!(!is_model_compliant_with_baseline("gemini-3.5-flash-lite"));
-        assert!(!is_model_compliant_with_baseline("gemini-3-flash"));
         assert!(!is_model_compliant_with_baseline("gemini-1.5-flash"));
         assert!(!is_model_compliant_with_baseline("gemini-2.0-flash"));
 
@@ -1261,6 +1342,83 @@ mod tests {
         assert_eq!(
             resolve_model_route_with_effort("gemini-3.1-pro-high", &empty, None),
             "gemini-3.1-pro-high"
+        );
+    }
+
+    #[test]
+    fn test_canonicalize_claude_5_major_models() {
+        assert_eq!(
+            canonicalize_claude_client_model_id("claude-opus-5"),
+            "claude-opus-5-5"
+        );
+        assert_eq!(
+            canonicalize_claude_client_model_id("claude-sonnet-5"),
+            "claude-sonnet-5-5"
+        );
+        assert_eq!(
+            canonicalize_claude_client_model_id("claude-haiku-5"),
+            "claude-haiku-5-5"
+        );
+        assert_eq!(
+            canonicalize_claude_client_model_id("anthropic/claude-opus-5"),
+            "claude-opus-5-5"
+        );
+        assert_eq!(
+            canonicalize_claude_client_model_id("claude-opus-5-low"),
+            "claude-opus-5-5-low"
+        );
+    }
+
+    #[test]
+    fn test_custom_mapping_case_insensitive_and_canonical() {
+        let mut custom = HashMap::new();
+        custom.insert(
+            "claude-opus-5".to_string(),
+            "gemini-3.8-flash-medium".to_string(),
+        );
+
+        // 大小写不敏感匹配
+        assert_eq!(
+            resolve_model_route_with_effort("Claude-Opus-5", &custom, None),
+            "gemini-3.8-flash-medium"
+        );
+        // 精确匹配
+        assert_eq!(
+            resolve_model_route_with_effort("claude-opus-5", &custom, None),
+            "gemini-3.8-flash-medium"
+        );
+    }
+
+    #[test]
+    fn test_normalize_to_standard_id_claude_submodel_isolation() {
+        // Issue #3506: 解耦 Opus, Sonnet, Haiku 为独立保护组，避免单模型 429 熔断整池
+        assert_eq!(
+            normalize_to_standard_id("claude-opus-5-5-medium"),
+            Some("claude-opus".to_string())
+        );
+        assert_eq!(
+            normalize_to_standard_id("claude-opus-4-6-thinking"),
+            Some("claude-opus".to_string())
+        );
+        assert_eq!(
+            normalize_to_standard_id("claude-sonnet-5-5-high"),
+            Some("claude-sonnet".to_string())
+        );
+        assert_eq!(
+            normalize_to_standard_id("claude-sonnet-4-6"),
+            Some("claude-sonnet".to_string())
+        );
+        assert_eq!(
+            normalize_to_standard_id("claude-haiku-4-5"),
+            Some("claude-haiku".to_string())
+        );
+        assert_eq!(
+            normalize_to_standard_id("claude-fable-5"),
+            Some("claude-fable".to_string())
+        );
+        assert_eq!(
+            normalize_to_standard_id("claude"),
+            Some("claude".to_string())
         );
     }
 }

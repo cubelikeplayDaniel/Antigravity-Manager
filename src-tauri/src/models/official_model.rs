@@ -212,7 +212,14 @@ impl OfficialModelCatalog {
                         && !s.contains('@')
                         && !s.contains('/')
                         && !s.contains(':')
-                        && s.chars().all(|c| c.is_alphanumeric() || c == '-')
+                        && !s.chars().any(|c| c.is_ascii_digit())
+                        && s.chars().all(|c| c.is_ascii_alphabetic() || c == '-')
+                        && !s.starts_with('-')
+                        && !s.ends_with('-')
+                        && s != "thinking"
+                        && s != "image"
+                        && s != "preview"
+                        && s != "exp"
                     {
                         if seen.insert(s.to_string()) {
                             found.push(s.to_string());
@@ -340,5 +347,36 @@ mod tests {
 
         let missing: Sample = serde_json::from_str("{}").expect("missing");
         assert!(missing.thinking_level.is_none());
+    }
+
+    #[test]
+    fn collect_tiers_for_base_rejects_digit_suffixes() {
+        let tiers_for_incomplete_base =
+            OfficialModelCatalog::collect_tiers_for_base("claude-opus-5");
+        // "claude-opus-5" 绝不能将 "claude-opus-5-5-medium" 截取出的 "5-medium" 当成合法档位！
+        assert!(
+            !tiers_for_incomplete_base.contains(&"5-medium".to_string()),
+            "Incomplete base claude-opus-5 must not extract 5-medium as a tier: {:?}",
+            tiers_for_incomplete_base
+        );
+        assert!(
+            tiers_for_incomplete_base.is_empty(),
+            "claude-opus-5 should have no tiers, got: {:?}",
+            tiers_for_incomplete_base
+        );
+
+        let tiers_for_full_base = OfficialModelCatalog::collect_tiers_for_base("claude-opus-5-5");
+        assert!(
+            tiers_for_full_base.contains(&"medium".to_string()),
+            "claude-opus-5-5 must contain medium tier"
+        );
+        assert!(
+            tiers_for_full_base.contains(&"low".to_string()),
+            "claude-opus-5-5 must contain low tier"
+        );
+        assert!(
+            tiers_for_full_base.contains(&"high".to_string()),
+            "claude-opus-5-5 must contain high tier"
+        );
     }
 }

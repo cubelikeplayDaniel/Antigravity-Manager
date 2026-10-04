@@ -731,6 +731,24 @@ pub async fn handle_messages(
             }
         };
 
+    // 0. 自定义映射优先拦截 (用户自定义路由与热更新规则拥有最高优先级，避免被后续变体推断抹平原模型意图)
+    let custom_target = {
+        let custom_mapping = state.custom_mapping.read().await;
+        crate::proxy::common::model_mapping::resolve_custom_model_route(
+            &request.model,
+            &*custom_mapping,
+        )
+    };
+    if let Some(target) = custom_target {
+        tracing::info!(
+            "[{}] [CustomMapping] 命中用户自定义映射规则: {} -> {}",
+            trace_id,
+            request.model,
+            target
+        );
+        request.model = target;
+    }
+
     // [Variant] Resolve canonical model + variant → real model + real params.
     let model_lower = request.model.to_lowercase();
     let is_v3_or_above = model_specs::is_gemini_v3_or_above(&request.model);
@@ -795,12 +813,17 @@ pub async fn handle_messages(
             .map(|v| v as u32)
     };
 
-    let effort_hint = request
-        .output_config
-        .as_ref()
-        .and_then(|config| config.effort.clone())
-        .or_else(|| request.thinking.as_ref().and_then(|t| t.effort.clone()))
-        .or_else(|| thinking_hint.level.clone());
+    // 当客户端显式关闭思考或预算为 0 时（如 Claude Desktop 自动模式安全门禁），意图对齐至 low 档位，确保命中低开销模型
+    let effort_hint = if client_disabled {
+        Some("low".to_string())
+    } else {
+        request
+            .output_config
+            .as_ref()
+            .and_then(|config| config.effort.clone())
+            .or_else(|| request.thinking.as_ref().and_then(|t| t.effort.clone()))
+            .or_else(|| thinking_hint.level.clone())
+    };
     let effort_tier =
         crate::proxy::common::variant_mapping::tier_from_effort(effort_hint.as_deref());
     let canonical_model = request.model.clone();
