@@ -760,6 +760,18 @@ pub async fn apply_claude_cowork_patch(file_path: Option<String>) -> Result<Stri
     // 5. macOS ad-hoc 代码重签名（若属于 App Bundle，需连带进行 Deep 重签名以满足系统 Gatekeeper 规范）
     #[cfg(target_os = "macos")]
     {
+        let rollback = || {
+            let _ = fs::copy(&backup_path, &path);
+            #[cfg(unix)]
+            {
+                if let Ok(metadata) = fs::metadata(&path) {
+                    let mut perms = metadata.permissions();
+                    perms.set_mode(0o755);
+                    let _ = fs::set_permissions(&path, perms);
+                }
+            }
+        };
+
         // 5.1 签名核心可执行二进制
         let output = std::process::Command::new("/usr/bin/codesign")
             .args(&["--force", "--sign", "-", "--", &actual_path])
@@ -767,14 +779,16 @@ pub async fn apply_claude_cowork_patch(file_path: Option<String>) -> Result<Stri
         match output {
             Ok(out) if out.status.success() => {}
             Ok(out) => {
+                rollback();
                 let err_msg = String::from_utf8_lossy(&out.stderr);
                 return Err(format!(
-                    "补丁已写入，但二进制 codesign 重签名失败: {}",
+                    "补丁已写入，但二进制 codesign 重签名失败（已自动回滚备份以防 AMFI 崩溃）: {}",
                     err_msg
                 ));
             }
             Err(e) => {
-                return Err(format!("执行 codesign 命令失败: {}", e));
+                rollback();
+                return Err(format!("执行 codesign 命令失败（已自动回滚备份）: {}", e));
             }
         }
 
@@ -787,14 +801,19 @@ pub async fn apply_claude_cowork_patch(file_path: Option<String>) -> Result<Stri
             match bundle_output {
                 Ok(out) if out.status.success() => {}
                 Ok(out) => {
+                    rollback();
                     let err_msg = String::from_utf8_lossy(&out.stderr);
                     return Err(format!(
-                        "二进制已签名，但 App Bundle deep 重签名失败: {}",
+                        "二进制已签名，但 App Bundle deep 重签名失败（已自动回滚备份）: {}",
                         err_msg
                     ));
                 }
                 Err(e) => {
-                    return Err(format!("执行 App Bundle codesign 命令失败: {}", e));
+                    rollback();
+                    return Err(format!(
+                        "执行 App Bundle codesign 命令失败（已自动回滚备份）: {}",
+                        e
+                    ));
                 }
             }
         }
@@ -826,16 +845,10 @@ pub async fn revert_claude_cowork_patch(file_path: Option<String>) -> Result<Str
 
         #[cfg(target_os = "macos")]
         {
+            // 备份文件本身保留了官方开发者证书与原版签名，严禁执行 ad-hoc 覆盖以避免剥离官方证书与 Keychain 授权
             let _ = std::process::Command::new("/usr/bin/codesign")
-                .args(&["--force", "--sign", "-", "--", &actual_path])
+                .args(&["--verify", "--verbose=2", "--", &actual_path])
                 .output();
-
-            if let Some(bundle_path) = find_enclosing_app_bundle(&path) {
-                let bundle_str = bundle_path.to_string_lossy().to_string();
-                let _ = std::process::Command::new("/usr/bin/codesign")
-                    .args(&["--force", "--deep", "--sign", "-", "--", &bundle_str])
-                    .output();
-            }
         }
         return Ok("已成功从备份还原原生二进制！".into());
     }
