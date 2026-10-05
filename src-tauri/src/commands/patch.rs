@@ -477,7 +477,7 @@ fn scan_all_claude_installations() -> Vec<ClaudeInstallationInfo> {
 
         // 3. 去重并提取补丁状态
         let patched_re = regex::bytes::Regex::new(
-            r"function\s+[a-zA-Z0-9_$]+\([a-zA-Z0-9_$]+,[a-zA-Z0-9_$]+,[a-zA-Z0-9_$]+\)\{return 0;\}"
+            r"function\s+[a-zA-Z0-9_$]+\([a-zA-Z0-9_$]+,[a-zA-Z0-9_$]+,[a-zA-Z0-9_$]+\)\{(return 0;|.*?s>=(8000|35000).*?\})"
         ).ok();
 
         let origin_re = regex::bytes::Regex::new(
@@ -590,19 +590,23 @@ pub async fn check_claude_cowork_patch(
     let path = resolve_claude_binary_path(file_path)?;
     let data = fs::read(&path).map_err(|e| format!("读取文件失败: {}", e))?;
 
-    // 1. 检查是否已经注入过补丁 (支持 return 0; 或精准 35k 上下文预算模式)
+    // 1. 检查是否已经注入过补丁 (支持 return 0; 或 8k/35k 精准上下文预算模式)
     let patched_re = regex::bytes::Regex::new(
-        r"function\s+[a-zA-Z0-9_$]+\([a-zA-Z0-9_$]+,[a-zA-Z0-9_$]+,[a-zA-Z0-9_$]+\)\{(return 0;|.*?s>=35000.*?\})"
+        r"function\s+[a-zA-Z0-9_$]+\([a-zA-Z0-9_$]+,[a-zA-Z0-9_$]+,[a-zA-Z0-9_$]+\)\{(return 0;|.*?s>=(8000|35000).*?\})"
     ).map_err(|e| e.to_string())?;
 
     if patched_re.is_match(&data) {
+        let is_8k = data.windows(8).any(|w| w == b"s>=8000)");
+        let desc = if is_8k {
+            "已成功注入 8k 深度归档补丁 (保留最新 8k 活跃消息上下文，超出历史 100% 浓缩归档，压缩率与净空大幅提升)"
+        } else {
+            "已注入深度归档补丁 (保留活跃消息上下文，超出历史浓缩归档)"
+        };
         return Ok(ClaudePatchStatus {
             file_path: path.to_string_lossy().to_string(),
             is_patched: true,
             is_patchable: true,
-            message:
-                "已成功注入 35k 深度归档补丁 (保留最新 35k 活跃上下文，超出历史 100% 浓缩归档)"
-                    .into(),
+            message: desc.into(),
             available_installations: all_installs,
         });
     }
@@ -639,18 +643,36 @@ pub async fn apply_claude_cowork_patch(file_path: Option<String>) -> Result<Stri
 
     let data = fs::read(&path).map_err(|e| format!("读取文件失败: {}", e))?;
 
-    // 1. 检查是否已打补丁
-    let patched_re = regex::bytes::Regex::new(
-        r"function\s+[a-zA-Z0-9_$]+\([a-zA-Z0-9_$]+,[a-zA-Z0-9_$]+,[a-zA-Z0-9_$]+\)\{(return 0;|.*?s>=35000.*?\})"
+    // 1. 检查是否已打 8k 深度归档补丁
+    let patched_8k_re = regex::bytes::Regex::new(
+        r"function\s+[a-zA-Z0-9_$]+\([a-zA-Z0-9_$]+,[a-zA-Z0-9_$]+,[a-zA-Z0-9_$]+\)\{(return 0;|.*?s>=8000.*?\})"
     ).map_err(|e| e.to_string())?;
-    if patched_re.is_match(&data) {
-        return Ok("该文件已处于 35k 深度归档补丁生效状态，无需重复注入".into());
+    if patched_8k_re.is_match(&data) {
+        return Ok("该文件已处于 8k 深度归档补丁生效状态，无需重复注入".into());
     }
 
     // 2. 匹配原生特征并提取变量名
     let origin_re = regex::bytes::Regex::new(
         r"function\s+([a-zA-Z0-9_$]+)\(([a-zA-Z0-9_$]+),([a-zA-Z0-9_$]+),([a-zA-Z0-9_$]+)\)\{let\s+[a-zA-Z0-9_$]+=0,[a-zA-Z0-9_$]+=0;for\(let\s+[a-zA-Z0-9_$]+=[a-zA-Z0-9_$]+-1;[a-zA-Z0-9_$]+>=0;[a-zA-Z0-9_$]+--\)if\([a-zA-Z0-9_$]+\+=[a-zA-Z0-9_$]+\[[a-zA-Z0-9_$]+\],[a-zA-Z0-9_$]+\+\+,[a-zA-Z0-9_$]+>=[a-zA-Z0-9_$]+\)break;if\([a-zA-Z0-9_$]+>=[a-zA-Z0-9_$]+-1\)return\s+Math\.max\(1,Math\.floor\([a-zA-Z0-9_$]+/2\)\);return\s+[a-zA-Z0-9_$]+\}"
     ).map_err(|e| e.to_string())?;
+
+    let mut data = data;
+    if !origin_re.is_match(&data) {
+        // 若当前文件打了旧版 35k 补丁，尝试自动从备份还原原始二进制以完成 8k 升级
+        if let Some(backup_path) = find_existing_backup_path(&path) {
+            if let Ok(orig_data) = fs::read(&backup_path) {
+                if origin_re.is_match(&orig_data) {
+                    data = orig_data;
+                } else {
+                    return Err("未找到修剪算法特征，无法应用补丁".into());
+                }
+            } else {
+                return Err("未找到修剪算法特征，且无法读取备份文件".into());
+            }
+        } else {
+            return Err("未找到修剪算法特征，无法应用补丁".into());
+        }
+    }
 
     let Some(caps) = origin_re.captures(&data) else {
         return Err("未找到修剪算法特征，无法应用补丁".into());
@@ -666,8 +688,8 @@ pub async fn apply_claude_cowork_patch(file_path: Option<String>) -> Result<Stri
     let p2 = std::str::from_utf8(caps.get(3).unwrap().as_bytes()).unwrap();
     let p3 = std::str::from_utf8(caps.get(4).unwrap().as_bytes()).unwrap();
 
-    // 构造严格等长替换字节流 (直接钉死为 35k 活跃上下文预算，保持严格等长与 0 偏移漂移)
-    let prefix = format!("function {}({},{},{}){{let s=0,g=0;for(let h={}-1;h>=0;h--)if(s+={}[h],g++,s>=35000)break;return g;}}/*", fn_name, p1, p2, p3, p2, p1);
+    // 构造严格等长替换字节流 (精准设置为 8k 活跃消息预算，提升压缩率并保持严格等长与 0 偏移漂移)
+    let prefix = format!("function {}({},{},{}){{let s=0,g=0;for(let h={}-1;h>=0;h--)if(s+={}[h],g++,s>=8000)break;return g;}}/*", fn_name, p1, p2, p3, p2, p1);
     let suffix = "*/";
     if prefix.len() + suffix.len() > matched_len {
         return Err("构造补丁长度超限".into());
@@ -774,7 +796,7 @@ pub async fn apply_claude_cowork_patch(file_path: Option<String>) -> Result<Stri
 
         // 5.1 签名核心可执行二进制
         let output = std::process::Command::new("/usr/bin/codesign")
-            .args(&["--force", "--sign", "-", "--", &actual_path])
+            .args(["--force", "--sign", "-", "--", &actual_path])
             .output();
         match output {
             Ok(out) if out.status.success() => {}
@@ -796,7 +818,7 @@ pub async fn apply_claude_cowork_patch(file_path: Option<String>) -> Result<Stri
         if let Some(bundle_path) = find_enclosing_app_bundle(&path) {
             let bundle_str = bundle_path.to_string_lossy().to_string();
             let bundle_output = std::process::Command::new("/usr/bin/codesign")
-                .args(&["--force", "--deep", "--sign", "-", "--", &bundle_str])
+                .args(["--force", "--deep", "--sign", "-", "--", &bundle_str])
                 .output();
             match bundle_output {
                 Ok(out) if out.status.success() => {}
@@ -847,7 +869,7 @@ pub async fn revert_claude_cowork_patch(file_path: Option<String>) -> Result<Str
         {
             // 备份文件本身保留了官方开发者证书与原版签名，严禁执行 ad-hoc 覆盖以避免剥离官方证书与 Keychain 授权
             let _ = std::process::Command::new("/usr/bin/codesign")
-                .args(&["--verify", "--verbose=2", "--", &actual_path])
+                .args(["--verify", "--verbose=2", "--", &actual_path])
                 .output();
         }
         return Ok("已成功从备份还原原生二进制！".into());
@@ -1007,5 +1029,29 @@ mod tests {
         println!(
             "\n================================================================================\n"
         );
+    }
+
+    #[test]
+    fn test_patch_pattern_matches_8k_and_35k_and_origin() {
+        let origin_code = b"function testFn(p1,p2,p3){let s=0,g=0;for(let h=p2-1;h>=0;h--)if(s+=p1[h],g++,s>=p3)break;if(g>=p2-1)return Math.max(1,Math.floor(p2/2));return g}";
+        let patched_8k_code = b"function testFn(p1,p2,p3){let s=0,g=0;for(let h=p2-1;h>=0;h--)if(s+=p1[h],g++,s>=8000)break;return g;}/*                    */";
+        let patched_35k_code = b"function testFn(p1,p2,p3){let s=0,g=0;for(let h=p2-1;h>=0;h--)if(s+=p1[h],g++,s>=35000)break;return g;}/*                   */";
+        let patched_ret0_code = b"function testFn(p1,p2,p3){return 0;}/*                                                                                     */";
+
+        let origin_re = regex::bytes::Regex::new(
+            r"function\s+([a-zA-Z0-9_$]+)\(([a-zA-Z0-9_$]+),([a-zA-Z0-9_$]+),([a-zA-Z0-9_$]+)\)\{let\s+[a-zA-Z0-9_$]+=0,[a-zA-Z0-9_$]+=0;for\(let\s+[a-zA-Z0-9_$]+=[a-zA-Z0-9_$]+-1;[a-zA-Z0-9_$]+>=0;[a-zA-Z0-9_$]+--\)if\([a-zA-Z0-9_$]+\+=[a-zA-Z0-9_$]+\[[a-zA-Z0-9_$]+\],[a-zA-Z0-9_$]+\+\+,[a-zA-Z0-9_$]+>=[a-zA-Z0-9_$]+\)break;if\([a-zA-Z0-9_$]+>=[a-zA-Z0-9_$]+-1\)return\s+Math\.max\(1,Math\.floor\([a-zA-Z0-9_$]+/2\)\);return\s+[a-zA-Z0-9_$]+\}"
+        ).unwrap();
+
+        let patched_re = regex::bytes::Regex::new(
+            r"function\s+[a-zA-Z0-9_$]+\([a-zA-Z0-9_$]+,[a-zA-Z0-9_$]+,[a-zA-Z0-9_$]+\)\{(return 0;|.*?s>=(8000|35000).*?\})"
+        ).unwrap();
+
+        assert!(origin_re.is_match(origin_code));
+        assert!(!origin_re.is_match(patched_8k_code));
+
+        assert!(patched_re.is_match(patched_8k_code));
+        assert!(patched_re.is_match(patched_35k_code));
+        assert!(patched_re.is_match(patched_ret0_code));
+        assert!(!patched_re.is_match(origin_code));
     }
 }

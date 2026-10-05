@@ -47,37 +47,106 @@ static COMPACTION_IMMUNITY_LEASES: LazyLock<DashMap<String, CompactionImmunityLe
 const COMPACTION_IMMUNITY_INITIAL_TTL_SECS: u64 = 300;
 const COMPACTION_IMMUNITY_WINDOW_SECS: u64 = 30;
 
-/// Claude Cowork 手动 ./compact 执行状态池 (Session -> 状态信息)
-#[derive(Debug, Clone)]
-struct CoworkManualCompactState {
-    before_tokens: u32,
-    ts: std::time::Instant,
-    summary_done: bool,
+/// 压缩模式类型：区分手动 ./compact 指令驱动与自动超限自愈门禁驱动
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoworkCompactKind {
+    Manual,
+    Auto,
 }
 
-static COWORK_MANUAL_COMPACT_SESSIONS: LazyLock<DashMap<String, CoworkManualCompactState>> =
+/// Claude Cowork 统一压缩执行状态池 (Session -> 状态信息)
+/// 手动与自动压缩共享一套压缩标记与状态生命周期，防止冲突、竞争与双重 400 假报警
+#[derive(Debug, Clone)]
+pub struct CoworkCompactState {
+    pub kind: CoworkCompactKind,
+    pub before_tokens: u32,
+    pub ts: std::time::Instant,
+    pub summary_done: bool,
+    pub target_limit: u32,
+}
+
+pub static COWORK_COMPACT_SESSIONS: LazyLock<DashMap<String, CoworkCompactState>> =
     LazyLock::new(DashMap::new);
-const MAX_MANUAL_COMPACT_SESSIONS_CAPACITY: usize = 1000;
+pub const MAX_COMPACT_SESSIONS_CAPACITY: usize = 1000;
 
 /// 近期触发压缩（手动或自动）的会话集合 (Session -> 触发时刻)，用于跨轮次对齐
-static PENDING_COMPACT_SESSIONS: LazyLock<DashMap<String, std::time::Instant>> =
+pub static PENDING_COMPACT_SESSIONS: LazyLock<DashMap<String, std::time::Instant>> =
     LazyLock::new(DashMap::new);
 
-fn prune_manual_compact_sessions_if_needed() {
-    if COWORK_MANUAL_COMPACT_SESSIONS.len() >= MAX_MANUAL_COMPACT_SESSIONS_CAPACITY {
+/// 检查会话当前是否处于压缩流程中（无论是手动还是自动压缩，统一判断并在超时后主动清理）
+pub fn is_session_in_compaction(session_key: &str) -> bool {
+    if let Some(entry) = COWORK_COMPACT_SESSIONS.get(session_key) {
+        if entry.ts.elapsed().as_secs() < 300 {
+            true
+        } else {
+            drop(entry);
+            COWORK_COMPACT_SESSIONS.remove(session_key);
+            false
+        }
+    } else {
+        false
+    }
+}
+
+pub fn prune_compact_sessions_if_needed() {
+    if COWORK_COMPACT_SESSIONS.len() >= MAX_COMPACT_SESSIONS_CAPACITY {
         let now = std::time::Instant::now();
-        COWORK_MANUAL_COMPACT_SESSIONS
-            .retain(|_, state| now.duration_since(state.ts).as_secs() < 300);
-        if COWORK_MANUAL_COMPACT_SESSIONS.len() >= MAX_MANUAL_COMPACT_SESSIONS_CAPACITY {
-            COWORK_MANUAL_COMPACT_SESSIONS.clear();
+        COWORK_COMPACT_SESSIONS.retain(|_, state| now.duration_since(state.ts).as_secs() < 300);
+        if COWORK_COMPACT_SESSIONS.len() >= MAX_COMPACT_SESSIONS_CAPACITY {
+            COWORK_COMPACT_SESSIONS.clear();
         }
     }
 }
 
 /// 刚刚完成 compact 的会话防重放缓存 (Session -> (完成时间戳, 回显文本, 剩余Token量))
-static COWORK_JUST_COMPACTED_CACHE: LazyLock<DashMap<String, (std::time::Instant, String, u32)>> =
-    LazyLock::new(DashMap::new);
-const MAX_JUST_COMPACTED_CACHE_CAPACITY: usize = 1000;
+pub static COWORK_JUST_COMPACTED_CACHE: LazyLock<
+    DashMap<String, (std::time::Instant, String, u32)>,
+> = LazyLock::new(DashMap::new);
+pub const MAX_JUST_COMPACTED_CACHE_CAPACITY: usize = 1000;
+
+pub fn prune_just_compacted_cache_if_needed() {
+    if COWORK_JUST_COMPACTED_CACHE.len() >= MAX_JUST_COMPACTED_CACHE_CAPACITY {
+        let purge_now = std::time::Instant::now();
+        COWORK_JUST_COMPACTED_CACHE
+            .retain(|_, (ts, _, _)| purge_now.duration_since(*ts).as_secs() < 60);
+        if COWORK_JUST_COMPACTED_CACHE.len() >= MAX_JUST_COMPACTED_CACHE_CAPACITY {
+            COWORK_JUST_COMPACTED_CACHE.clear();
+        }
+    }
+}
+
+/// 深度检测请求前几条消息是否包含 post-compaction continuation 接续标记
+/// 遍历前 3 条消息中所有的 Text 内容块，彻底解决 <system-reminder> 块遮挡接续标记导致漏检的问题
+pub fn detect_post_compaction_continuation(request: &ClaudeRequest) -> bool {
+    for m in request.messages.iter().take(3) {
+        match &m.content {
+            crate::proxy::mappers::claude::models::MessageContent::String(s) => {
+                if crate::proxy::mappers::common_utils::is_post_compaction_continuation_text(s) {
+                    return true;
+                }
+            }
+            crate::proxy::mappers::claude::models::MessageContent::Array(blocks) => {
+                for b in blocks {
+                    if let crate::proxy::mappers::claude::models::ContentBlock::Text { text } = b {
+                        if crate::proxy::mappers::common_utils::is_post_compaction_continuation_text(
+                            text,
+                        ) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// 计算自动压缩的有效安全阈值：
+/// 必须至少保留 target_limit + 25,000 的安全净空，防止压缩后上下文紧贴阈值瞬间再触发死循环 (autocompact_thrashing)
+pub fn calculate_effective_auto_compact_threshold(user_threshold: u32, target_limit: u32) -> u32 {
+    let min_safe_threshold = target_limit.saturating_add(25_000);
+    user_threshold.max(50_000).max(min_safe_threshold)
+}
 
 /// 判定请求是否为用户在 Cowork 客户端输入的手动 ./compact 指令
 fn is_manual_compact_command(request: &ClaudeRequest) -> bool {
@@ -152,12 +221,12 @@ fn calculate_claude_fixed_overhead(request: &ClaudeRequest) -> u32 {
             let desc_len = tool
                 .description
                 .as_deref()
-                .map(|d| crate::proxy::pipeline::estimator::estimate_tokens_from_str(d))
+                .map(crate::proxy::pipeline::estimator::estimate_tokens_from_str)
                 .unwrap_or(0);
             let schema_len = tool
                 .input_schema
                 .as_ref()
-                .map(|s| crate::proxy::pipeline::estimator::estimate_tokens(s))
+                .map(crate::proxy::pipeline::estimator::estimate_tokens)
                 .unwrap_or(0);
             overhead += name_len + desc_len + schema_len + 30;
         }
@@ -1025,15 +1094,13 @@ pub async fn handle_messages(
                     consumed: false,
                 },
             );
-            if let Some(mut state) = COWORK_MANUAL_COMPACT_SESSIONS.get_mut(pending_sid) {
+            if let Some(mut state) = COWORK_COMPACT_SESSIONS.get_mut(pending_sid) {
                 state.summary_done = true;
             }
         }
 
-        if experimental.enable_cowork_manual_compact {
-            if let Some(mut state) = COWORK_MANUAL_COMPACT_SESSIONS.get_mut(&session_key) {
-                state.summary_done = true;
-            }
+        if let Some(mut state) = COWORK_COMPACT_SESSIONS.get_mut(&session_key) {
+            state.summary_done = true;
         }
         tracing::info!(
             "[{}] [Lifecycle] Compaction summary request detected for session {}, issued immunity lease",
@@ -1042,21 +1109,7 @@ pub async fn handle_messages(
     }
 
     // 检查是否包含接续标记 (Post-Compaction Continuation)
-    let is_continuation_detected = request.messages.first().map_or(false, |m| {
-        let text = match &m.content {
-            crate::proxy::mappers::claude::models::MessageContent::String(s) => s.as_str(),
-            crate::proxy::mappers::claude::models::MessageContent::Array(blocks) => blocks
-                .first()
-                .and_then(|b| match b {
-                    crate::proxy::mappers::claude::models::ContentBlock::Text { text } => {
-                        Some(text.as_str())
-                    }
-                    _ => None,
-                })
-                .unwrap_or(""),
-        };
-        crate::proxy::mappers::common_utils::is_post_compaction_continuation_text(text)
-    });
+    let is_continuation_detected = detect_post_compaction_continuation(&request);
 
     // 分流 B: 已完成压缩提纯的会话接续 (Post-Compaction Continuation)
     // 采用代际租约状态机 (CompactionImmunityLease):
@@ -1085,6 +1138,22 @@ pub async fn handle_messages(
                 COMPACTION_IMMUNITY_LEASES.remove(&session_key);
                 false
             }
+        } else if is_continuation_detected {
+            // 接续标记保底：若检测到接续标记但无活跃租约，发放滑动窗口租约
+            let now = std::time::Instant::now();
+            COMPACTION_IMMUNITY_LEASES.insert(
+                session_key.clone(),
+                CompactionImmunityLease {
+                    created_at: now,
+                    last_touched: now,
+                    consumed: true,
+                },
+            );
+            tracing::info!(
+                "[{}] [Lifecycle] Continuation detected for session {}, minted sliding window lease",
+                trace_id, session_key
+            );
+            true
         } else {
             false
         }
@@ -1092,24 +1161,35 @@ pub async fn handle_messages(
         false
     };
 
+    // 若检测到已进入接续阶段且并非摘要请求自身，从统一压缩池中回收结算并归入防重放缓存
+    if (is_post_compaction || is_continuation_detected) && !is_compaction_request {
+        if let Some((_, state)) = COWORK_COMPACT_SESSIONS.remove(&session_key) {
+            let est_tokens = crate::proxy::pipeline::estimate_tokens(&original_body);
+            let saved_tok = state.before_tokens.saturating_sub(est_tokens);
+            let saved_k = (saved_tok as f64 / 1000.0).round() as u32;
+            let reply_text = if saved_k > 0 {
+                format!("Compacted conversation · saved {}k tokens", saved_k)
+            } else {
+                "Compacted conversation".to_string()
+            };
+            PENDING_COMPACT_SESSIONS.remove(&session_key);
+            prune_just_compacted_cache_if_needed();
+            COWORK_JUST_COMPACTED_CACHE.insert(
+                session_key.clone(),
+                (std::time::Instant::now(), reply_text, est_tokens),
+            );
+            tracing::info!(
+                "[{}] [Lifecycle] Harvested completed {:?} compact for session {} ({} -> {} tokens, saved {}k)",
+                trace_id, state.kind, session_key, state.before_tokens, est_tokens, saved_k
+            );
+        }
+    }
+
     // 检查是否为手动 ./compact 穿透指令
     let is_manual_compact = is_manual_compact_command(&request);
 
-    // 检查是否正处于 manual compact 流程中，若是则自动豁免 auto_compact 门禁，彻底解耦双重 400 撞车！
-    // 超过 300 秒未完成的孤儿 manual compact 会话视为超时失效并清理，防止永久禁用 auto_compact
-    let is_in_manual_compact = experimental.enable_cowork_manual_compact
-        && (is_manual_compact
-            || COWORK_MANUAL_COMPACT_SESSIONS
-                .get(&session_key)
-                .map_or(false, |entry| {
-                    if entry.ts.elapsed().as_secs() < 300 {
-                        true
-                    } else {
-                        drop(entry);
-                        COWORK_MANUAL_COMPACT_SESSIONS.remove(&session_key);
-                        false
-                    }
-                }));
+    // 检查是否正处于压缩流程中（手动或自动），若是则自动豁免 auto_compact 门禁，彻底解耦双重 400 撞车！
+    let is_in_compaction = is_session_in_compaction(&session_key);
 
     // 分流 C (优先分流): 手动 ./compact 指令拦截与闭环响应 (具有最高调度优先级，彻底短路自动门禁抢跑)
     if experimental.enable_cowork_manual_compact && is_manual_compact {
@@ -1159,25 +1239,21 @@ pub async fn handle_messages(
         let mut is_truly_compacted = false;
         let mut before_tok = 0u32;
 
-        if let Some(entry) = COWORK_MANUAL_COMPACT_SESSIONS.get(&session_key) {
+        if let Some(entry) = COWORK_COMPACT_SESSIONS.get(&session_key) {
             // 防死锁：超过 300 秒过期自动重置
             if now.duration_since(entry.ts).as_secs() >= 300 {
                 drop(entry);
-                COWORK_MANUAL_COMPACT_SESSIONS.remove(&session_key);
+                COWORK_COMPACT_SESSIONS.remove(&session_key);
             } else {
                 before_tok = entry.before_tokens;
                 let summary_already_done = entry.summary_done;
 
-                // 条件 1: 摘要请求已成功完成
-                if summary_already_done {
-                    is_truly_compacted = true;
-                }
-                // 条件 2: 带有接续豁免令牌或检测到接续标记
-                else if is_post_compaction || is_continuation_detected {
-                    is_truly_compacted = true;
-                }
-                // 条件 3: 上下文 tokens 明显回落（回落至 85% 以下）
-                else if before_tok > 0 && est_tokens < (before_tok * 85 / 100) {
+                // 条件: 摘要请求已完成，或带接续标记/豁免，或上下文 tokens 明显回落（回落至 85% 以下）
+                if summary_already_done
+                    || is_post_compaction
+                    || is_continuation_detected
+                    || (before_tok > 0 && est_tokens < (before_tok * 85 / 100))
+                {
                     is_truly_compacted = true;
                 }
             }
@@ -1192,16 +1268,9 @@ pub async fn handle_messages(
                 "Compacted conversation".to_string()
             };
 
-            COWORK_MANUAL_COMPACT_SESSIONS.remove(&session_key);
+            COWORK_COMPACT_SESSIONS.remove(&session_key);
             PENDING_COMPACT_SESSIONS.remove(&session_key);
-            if COWORK_JUST_COMPACTED_CACHE.len() >= MAX_JUST_COMPACTED_CACHE_CAPACITY {
-                let purge_now = std::time::Instant::now();
-                COWORK_JUST_COMPACTED_CACHE
-                    .retain(|_, (ts, _, _)| purge_now.duration_since(*ts).as_secs() < 60);
-                if COWORK_JUST_COMPACTED_CACHE.len() >= MAX_JUST_COMPACTED_CACHE_CAPACITY {
-                    COWORK_JUST_COMPACTED_CACHE.clear();
-                }
-            }
+            prune_just_compacted_cache_if_needed();
             COWORK_JUST_COMPACTED_CACHE
                 .insert(session_key.clone(), (now, reply_text.clone(), est_tokens));
             COMPACTION_IMMUNITY_LEASES.remove(&session_key);
@@ -1236,26 +1305,29 @@ pub async fn handle_messages(
 
         // 情况 C: 初次捕获 ./compact 指令，或处于客户端网络级即时重试阶段
         // 持续响应 400 假报警，直到驱动客户端彻底触发 Reactive Compact
-        prune_manual_compact_sessions_if_needed();
-        if !COWORK_MANUAL_COMPACT_SESSIONS.contains_key(&session_key) {
-            COWORK_MANUAL_COMPACT_SESSIONS.insert(
+        prune_compact_sessions_if_needed();
+        let fixed_overhead = calculate_claude_fixed_overhead(&request);
+        let target_limit = (fixed_overhead + 15_000).max(35_000);
+
+        if !COWORK_COMPACT_SESSIONS.contains_key(&session_key) {
+            COWORK_COMPACT_SESSIONS.insert(
                 session_key.clone(),
-                CoworkManualCompactState {
+                CoworkCompactState {
+                    kind: CoworkCompactKind::Manual,
                     before_tokens: est_tokens,
                     ts: now,
                     summary_done: false,
+                    target_limit,
                 },
             );
-        } else if let Some(mut entry) = COWORK_MANUAL_COMPACT_SESSIONS.get_mut(&session_key) {
+        } else if let Some(mut entry) = COWORK_COMPACT_SESSIONS.get_mut(&session_key) {
             entry.ts = now;
             if entry.before_tokens == 0 {
                 entry.before_tokens = est_tokens;
             }
+            entry.target_limit = target_limit;
         }
         PENDING_COMPACT_SESSIONS.insert(session_key.clone(), now);
-
-        let fixed_overhead = calculate_claude_fixed_overhead(&request);
-        let target_limit = (fixed_overhead + 15_000).max(35_000);
 
         // 防御性校验：若当前 tokens 已经处于 target_limit 之内，直接返回 200 成功响应，
         // 绝不发射 400 假报警，彻底杜绝客户端 Fst / fIt 算出负/零 initialTokenGap 触发 compactionImpossible
@@ -1312,12 +1384,14 @@ pub async fn handle_messages(
             .into_response();
     }
 
-    // 分流 D: 超限自愈假报警触发门禁 (必须自定义开启 + 双重确权 + 非手动指令)
+    // 分流 D: 超限自愈假报警触发门禁 (必须自定义开启 + 双重确权 + 非手动指令 + 非正在压缩中)
     // 铁律：普通 Agent 与未开启配置时，绝对不拦截，100% 享受 Gemini 百万超长上下文！
     if experimental.enable_cowork_auto_compact
         && !is_compaction_request
         && !is_post_compaction
-        && !is_in_manual_compact
+        && !is_continuation_detected
+        && !is_manual_compact
+        && !is_in_compaction
     {
         let is_cowork = request.tools.as_ref().map_or(false, |tools| {
             tools.iter().any(|t| {
@@ -1327,21 +1401,36 @@ pub async fn handle_messages(
         });
 
         if is_cowork {
-            let threshold = experimental.cowork_compact_threshold.max(50_000);
-            let est_tokens = crate::proxy::pipeline::estimate_tokens(&original_body);
-            // 动态计算目标上限: max(fixed_overhead + 15000, 35000)，确保客户端 initialTokenGap 恒可解
             let fixed_overhead = calculate_claude_fixed_overhead(&request);
             let target_limit = (fixed_overhead + 15_000).max(35_000);
+            let effective_threshold = calculate_effective_auto_compact_threshold(
+                experimental.cowork_compact_threshold,
+                target_limit,
+            );
+            let est_tokens = crate::proxy::pipeline::estimate_tokens(&original_body);
 
-            // 负 Gap 防御门禁：必须满足 est_tokens >= threshold 且 est_tokens > target_limit，严防负数或零 gap
-            if est_tokens >= threshold && est_tokens > target_limit {
+            // 负 Gap 与净空防御门禁：必须满足 est_tokens >= effective_threshold 且 est_tokens > target_limit
+            if est_tokens >= effective_threshold && est_tokens > target_limit {
                 tracing::warn!(
-                    "[{}] [Cowork-Gatekeeper] Cowork session reached {} tokens >= threshold {}, triggering native reactive compact",
+                    "[{}] [Cowork-Gatekeeper] Cowork session reached {} tokens >= effective threshold {} (target_limit: {}), triggering native reactive compact",
                     trace_id,
                     est_tokens,
-                    threshold
+                    effective_threshold,
+                    target_limit
                 );
-                PENDING_COMPACT_SESSIONS.insert(session_key.clone(), std::time::Instant::now());
+                prune_compact_sessions_if_needed();
+                let now = std::time::Instant::now();
+                COWORK_COMPACT_SESSIONS.insert(
+                    session_key.clone(),
+                    CoworkCompactState {
+                        kind: CoworkCompactKind::Auto,
+                        before_tokens: est_tokens,
+                        ts: now,
+                        summary_done: false,
+                        target_limit,
+                    },
+                );
+                PENDING_COMPACT_SESSIONS.insert(session_key.clone(), now);
                 let report_tokens = est_tokens.max(target_limit + 10_000);
                 let err_msg = format!(
                     "prompt is too long: {} tokens > {} maximum",
@@ -3455,37 +3544,27 @@ mod warmup_tests {
     }
 
     #[test]
-    fn test_manual_session_orphan_timeout_eviction() {
+    fn test_compact_session_orphan_timeout_eviction() {
         let session_key = "test_orphan_session_eviction".to_string();
-        COWORK_MANUAL_COMPACT_SESSIONS.insert(
+        COWORK_COMPACT_SESSIONS.insert(
             session_key.clone(),
-            CoworkManualCompactState {
+            CoworkCompactState {
+                kind: CoworkCompactKind::Manual,
                 before_tokens: 100_000,
                 ts: std::time::Instant::now() - std::time::Duration::from_secs(301),
                 summary_done: false,
+                target_limit: 35_000,
             },
         );
 
-        let is_manual = false;
-        let is_in_manual = is_manual
-            || COWORK_MANUAL_COMPACT_SESSIONS
-                .get(&session_key)
-                .map_or(false, |entry| {
-                    if entry.ts.elapsed().as_secs() < 300 {
-                        true
-                    } else {
-                        drop(entry);
-                        COWORK_MANUAL_COMPACT_SESSIONS.remove(&session_key);
-                        false
-                    }
-                });
+        let is_in_compaction_active = is_session_in_compaction(&session_key);
 
         assert!(
-            !is_in_manual,
-            "Expired orphan session must not be considered in manual compact"
+            !is_in_compaction_active,
+            "Expired orphan session must not be considered in compaction"
         );
         assert!(
-            !COWORK_MANUAL_COMPACT_SESSIONS.contains_key(&session_key),
+            !COWORK_COMPACT_SESSIONS.contains_key(&session_key),
             "Expired orphan session must be evicted from map"
         );
     }
@@ -3713,21 +3792,23 @@ mod warmup_tests {
     }
 
     #[test]
-    fn test_manual_compact_sessions_capacity_and_prune() {
+    fn test_compact_sessions_capacity_and_prune() {
         for i in 0..1010 {
-            COWORK_MANUAL_COMPACT_SESSIONS.insert(
+            COWORK_COMPACT_SESSIONS.insert(
                 format!("test_cap_session_{}", i),
-                CoworkManualCompactState {
+                CoworkCompactState {
+                    kind: CoworkCompactKind::Auto,
                     before_tokens: 50_000,
                     ts: std::time::Instant::now() - std::time::Duration::from_secs(350),
                     summary_done: false,
+                    target_limit: 35_000,
                 },
             );
         }
 
-        prune_manual_compact_sessions_if_needed();
+        prune_compact_sessions_if_needed();
         assert!(
-            COWORK_MANUAL_COMPACT_SESSIONS.len() <= MAX_MANUAL_COMPACT_SESSIONS_CAPACITY,
+            COWORK_COMPACT_SESSIONS.len() <= MAX_COMPACT_SESSIONS_CAPACITY,
             "Pruning must enforce capacity limit and evict timed-out entries"
         );
     }
@@ -3776,5 +3857,110 @@ mod warmup_tests {
             "Expired lease must strictly return false without granting permanent immunity"
         );
         assert!(!COMPACTION_IMMUNITY_LEASES.contains_key(&session_key));
+    }
+
+    #[test]
+    fn test_detect_post_compaction_continuation_multi_block() {
+        use crate::proxy::mappers::claude::models::{ContentBlock, Message, MessageContent};
+
+        // Case 1: First block is <system-reminder>, second block is continuation text
+        let req_multi_block = ClaudeRequest {
+            model: "claude-3-7-sonnet".to_string(),
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: MessageContent::Array(vec![
+                    ContentBlock::Text {
+                        text: "<system-reminder>Some system reminder</system-reminder>".to_string(),
+                    },
+                    ContentBlock::Text {
+                        text: "This session is being continued from a previous conversation that ran out of context.".to_string(),
+                    },
+                ]),
+            }],
+            ..Default::default()
+        };
+
+        assert!(
+            detect_post_compaction_continuation(&req_multi_block),
+            "Multi-block continuation must be detected even when preceded by system reminder"
+        );
+
+        // Case 2: Negative case
+        let req_normal = ClaudeRequest {
+            model: "claude-3-7-sonnet".to_string(),
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: MessageContent::String("Hello, how are you?".to_string()),
+            }],
+            ..Default::default()
+        };
+        assert!(!detect_post_compaction_continuation(&req_normal));
+    }
+
+    #[test]
+    fn test_calculate_effective_auto_compact_threshold_guarantees_headroom() {
+        // User sets threshold to 50k, but large tool overhead makes target_limit 53k
+        let user_threshold = 50_000;
+        let target_limit = 53_000;
+        let effective = calculate_effective_auto_compact_threshold(user_threshold, target_limit);
+
+        // Effective threshold must be at least target_limit + 25,000 = 78,000
+        assert_eq!(effective, 78_000);
+        assert!(effective >= target_limit + 25_000);
+
+        // If user threshold is generous (e.g. 120k), user threshold is respected
+        let generous_threshold = 120_000;
+        assert_eq!(
+            calculate_effective_auto_compact_threshold(generous_threshold, target_limit),
+            120_000
+        );
+    }
+
+    #[test]
+    fn test_unified_compaction_state_machine_prevents_collision() {
+        let session_key = "test_unified_compaction_collision".to_string();
+
+        // 1. Auto-compaction triggers, registers in unified state
+        let target_limit = 45_000;
+        COWORK_COMPACT_SESSIONS.insert(
+            session_key.clone(),
+            CoworkCompactState {
+                kind: CoworkCompactKind::Auto,
+                before_tokens: 90_000,
+                ts: std::time::Instant::now(),
+                summary_done: false,
+                target_limit,
+            },
+        );
+
+        // 2. Both manual and auto compact recognize the session is in compaction
+        assert!(is_session_in_compaction(&session_key));
+
+        // 3. Summary request arrives, marks summary_done
+        if let Some(mut state) = COWORK_COMPACT_SESSIONS.get_mut(&session_key) {
+            state.summary_done = true;
+        }
+
+        // 4. Continuation arrives with reduced context (e.g. 42_000 tokens)
+        let est_tokens = 42_000;
+        if let Some((_, state)) = COWORK_COMPACT_SESSIONS.remove(&session_key) {
+            let saved = state.before_tokens.saturating_sub(est_tokens);
+            assert_eq!(saved, 48_000);
+            COWORK_JUST_COMPACTED_CACHE.insert(
+                session_key.clone(),
+                (
+                    std::time::Instant::now(),
+                    format!("Compacted conversation · saved {}k tokens", saved / 1000),
+                    est_tokens,
+                ),
+            );
+        }
+
+        // 5. Active compaction state is cleared, cache is populated
+        assert!(!is_session_in_compaction(&session_key));
+        assert!(COWORK_JUST_COMPACTED_CACHE.contains_key(&session_key));
+
+        // Clean up
+        COWORK_JUST_COMPACTED_CACHE.remove(&session_key);
     }
 }
