@@ -315,7 +315,7 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
                             </div>
                             <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-normal">
                                 针对 Claude Cowork 模式无法通过 <code className="px-1 py-0.5 bg-gray-100 dark:bg-base-300 rounded font-mono text-[10px]">/compact</code> 进行深度归档（被桌面拦截为未知技能且官方强制保留 50% 历史）的底层缺陷。
-                                开启后支持在会话中发送 <code className="px-1 py-0.5 bg-gray-100 dark:bg-base-300 rounded font-mono text-[10px]">./compact</code> 穿透触发深度归档，并可配合下方微创补丁注入 35k 活跃上下文硬预算。后台已与上方自动压缩无缝互锁，绝不撞车。
+                                开启后支持在会话中发送 <code className="px-1 py-0.5 bg-gray-100 dark:bg-base-300 rounded font-mono text-[10px]">./compact</code> 穿透触发深度归档，并可配合下方微创补丁注入 8k 深度归档活跃上下文硬预算。后台已与上方自动压缩无缝互锁，绝不撞车。
                             </p>
                         </div>
                         <button
@@ -545,7 +545,7 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
                             <span>⚡ 配合补丁（可选，极限深度瘦身）</span>
                         </div>
                         <div className="text-[11px] text-purple-800/80 dark:text-purple-300/80 leading-relaxed">
-                            若后续点击注入下方微创补丁，将破除官方 50% 历史残留限制，把上下文直接削减到 35k 以下（释放 85%+）。系统自动隔离备份，随时一键还原。
+                            若后续点击注入下方微创补丁，将破除官方 50% 历史残留限制，把上下文活跃消息直接削减到 8k 以下（释放 85%+）。系统自动隔离备份，随时一键还原。
                         </div>
                     </div>
                 </div>
