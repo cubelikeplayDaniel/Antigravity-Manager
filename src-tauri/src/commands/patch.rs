@@ -315,6 +315,7 @@ pub struct ClaudeInstallationInfo {
     pub path: String,
     pub is_patched: bool,
     pub is_patchable: bool,
+    pub is_8k: bool,
     pub size_mb: f64,
 }
 
@@ -323,6 +324,8 @@ pub struct ClaudePatchStatus {
     pub file_path: String,
     pub is_patched: bool,
     pub is_patchable: bool,
+    pub is_8k: bool,
+    pub is_legacy: bool,
     pub message: String,
     pub available_installations: Vec<ClaudeInstallationInfo>,
 }
@@ -487,16 +490,21 @@ fn scan_all_claude_installations() -> Vec<ClaudeInstallationInfo> {
         for (ver, app_path, bin_path, is_prod) in candidates {
             if let Ok(meta) = fs::metadata(&bin_path) {
                 let sz_mb = meta.len() as f64 / (1024.0 * 1024.0);
-                let (is_patched, is_patchable) = if let Ok(data) = fs::read(&bin_path) {
+                let (is_patched, is_patchable, is_8k) = if let Ok(data) = fs::read(&bin_path) {
                     let patched = patched_re.as_ref().map_or(false, |r| r.is_match(&data));
+                    let is_8k = if patched {
+                        data.windows(8).any(|w| w == b"s>=8000)")
+                    } else {
+                        false
+                    };
                     let patchable = if patched {
                         true
                     } else {
                         origin_re.as_ref().map_or(false, |r| r.is_match(&data))
                     };
-                    (patched, patchable)
+                    (patched, patchable, is_8k)
                 } else {
-                    (false, false)
+                    (false, false, false)
                 };
 
                 results.push((
@@ -507,6 +515,7 @@ fn scan_all_claude_installations() -> Vec<ClaudeInstallationInfo> {
                         path: app_path.to_string_lossy().to_string(),
                         is_patched,
                         is_patchable,
+                        is_8k,
                         size_mb: (sz_mb * 10.0).round() / 10.0,
                     },
                 ));
@@ -606,6 +615,8 @@ pub async fn check_claude_cowork_patch(
             file_path: path.to_string_lossy().to_string(),
             is_patched: true,
             is_patchable: true,
+            is_8k,
+            is_legacy: !is_8k,
             message: desc.into(),
             available_installations: all_installs,
         });
@@ -621,6 +632,8 @@ pub async fn check_claude_cowork_patch(
             file_path: path.to_string_lossy().to_string(),
             is_patched: false,
             is_patchable: true,
+            is_8k: false,
+            is_legacy: false,
             message: "检测到官方原生修剪算法，可安全注入 135 字节等长微创补丁".into(),
             available_installations: all_installs,
         });
@@ -630,6 +643,8 @@ pub async fn check_claude_cowork_patch(
         file_path: path.to_string_lossy().to_string(),
         is_patched: false,
         is_patchable: false,
+        is_8k: false,
+        is_legacy: false,
         message: "未匹配到目标修剪特征，当前版本结构可能已变更".into(),
         available_installations: all_installs,
     })
@@ -876,6 +891,165 @@ pub async fn revert_claude_cowork_patch(file_path: Option<String>) -> Result<Str
     }
 
     Err("未找到备份文件，无法执行一键还原".into())
+}
+
+/// 内部辅助函数：检查 Claude Desktop 进程是否正在运行
+fn is_claude_running_internal(file_path: Option<&str>) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        // 1. 优先通过 AppleScript 检查 Claude.app 实例状态
+        let out = std::process::Command::new("/usr/bin/osascript")
+            .args(["-e", "application \"Claude\" is running"])
+            .output();
+        if let Ok(output) = out {
+            if output.status.success() {
+                let s = String::from_utf8_lossy(&output.stdout)
+                    .trim()
+                    .to_lowercase();
+                if s == "true" {
+                    return true;
+                }
+            }
+        }
+
+        // 2. 深度扫描系统进程列表，匹配 Claude 路径及子进程
+        let mut sys = sysinfo::System::new();
+        sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
+        let target_bundle = file_path
+            .map(std::path::PathBuf::from)
+            .and_then(|p| find_enclosing_app_bundle(&p))
+            .map(|p| p.to_string_lossy().to_string().to_lowercase());
+
+        for (_pid, proc_) in sys.processes() {
+            let exe = proc_
+                .exe()
+                .map(|e| e.to_string_lossy().to_string().to_lowercase())
+                .unwrap_or_default();
+
+            if exe.contains("/applications/claude.app/")
+                || exe.contains("claude.app/contents/macos/")
+            {
+                return true;
+            }
+            if let Some(ref tb) = target_bundle {
+                if exe.contains(tb) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = file_path;
+        false
+    }
+}
+
+/// 检查 Claude Desktop 客户端是否正在运行
+#[tauri::command]
+pub async fn is_claude_desktop_running(file_path: Option<String>) -> Result<bool, String> {
+    tokio::task::spawn_blocking(move || is_claude_running_internal(file_path.as_deref()))
+        .await
+        .map_err(|e| format!("检查 Claude 运行状态任务失败: {}", e))
+}
+
+/// 优雅退出并清理 Claude Desktop 进程
+#[tauri::command]
+pub async fn close_claude_desktop(file_path: Option<String>) -> Result<bool, String> {
+    tokio::task::spawn_blocking(move || {
+        #[cfg(target_os = "macos")]
+        {
+            // 1. 优先通过 AppleScript 优雅退出 Claude
+            let _ = std::process::Command::new("/usr/bin/osascript")
+                .args(["-e", "tell application \"Claude\" to quit"])
+                .output();
+
+            // 最多等待 3 秒等待进程优雅退出
+            let start = std::time::Instant::now();
+            while start.elapsed() < std::time::Duration::from_millis(3000) {
+                if !is_claude_running_internal(file_path.as_deref()) {
+                    return Ok(true);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+
+            // 2. 超时未完全退出的，定位残留 PIDs 并发送 SIGTERM/SIGKILL 强制终止
+            let mut sys = sysinfo::System::new();
+            sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
+            let target_bundle = file_path
+                .as_ref()
+                .map(|p| std::path::PathBuf::from(p))
+                .and_then(|p| find_enclosing_app_bundle(&p))
+                .map(|p| p.to_string_lossy().to_string().to_lowercase());
+
+            let mut pids_to_kill = Vec::new();
+            for (pid, proc_) in sys.processes() {
+                let exe = proc_
+                    .exe()
+                    .map(|e| e.to_string_lossy().to_string().to_lowercase())
+                    .unwrap_or_default();
+                let is_claude = exe.contains("/applications/claude.app/")
+                    || exe.contains("claude.app/contents/macos/")
+                    || target_bundle.as_ref().map_or(false, |tb| exe.contains(tb));
+
+                if is_claude {
+                    pids_to_kill.push(*pid);
+                }
+            }
+
+            for pid in pids_to_kill {
+                let _ = std::process::Command::new("/bin/kill")
+                    .args(["-9", &pid.to_string()])
+                    .output();
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            Ok(true)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = file_path;
+            Ok(true)
+        }
+    })
+    .await
+    .map_err(|e| format!("退出 Claude 失败: {}", e))?
+}
+
+/// 重新启动 Claude Desktop 客户端
+#[tauri::command]
+pub async fn launch_claude_desktop(file_path: Option<String>) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        #[cfg(target_os = "macos")]
+        {
+            let mut opened = false;
+            if let Some(ref fp) = file_path {
+                let path = std::path::PathBuf::from(fp);
+                if let Some(bundle) = find_enclosing_app_bundle(&path) {
+                    if bundle.exists() {
+                        let _ = std::process::Command::new("/usr/bin/open")
+                            .arg(&bundle)
+                            .output();
+                        opened = true;
+                    }
+                }
+            }
+            if !opened {
+                let _ = std::process::Command::new("/usr/bin/open")
+                    .args(["-a", "Claude"])
+                    .output();
+            }
+            Ok(())
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = file_path;
+            Ok(())
+        }
+    })
+    .await
+    .map_err(|e| format!("启动 Claude 失败: {}", e))?
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Save, Check, Bot, Laptop, ShieldCheck, Zap, Wrench, RotateCcw, RefreshCw, FolderOpen, HelpCircle, BookOpen, Sparkles, ChevronDown, ChevronUp } from "lucide-react";
+import { Save, Check, Bot, Laptop, ShieldCheck, Zap, Wrench, RotateCcw, RefreshCw, FolderOpen, HelpCircle, BookOpen, Sparkles, ChevronDown, ChevronUp, AlertTriangle } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { ExperimentalConfig } from "../../types/config";
 import { showToast } from "../common/ToastContainer";
@@ -48,13 +48,32 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
         showToast("已成功启用 ./compact 深度归档增强", "success");
     };
 
-    const [patchStatus, setPatchStatus] = useState<{ is_patched: boolean; is_patchable: boolean; message: string; file_path: string; available_installations?: Array<{ version: string; path: string; is_patched: boolean; size_mb: number }> } | null>(null);
+    const [patchStatus, setPatchStatus] = useState<{
+        is_patched: boolean;
+        is_patchable: boolean;
+        is_8k?: boolean;
+        is_legacy?: boolean;
+        message: string;
+        file_path: string;
+        available_installations?: Array<{
+            version: string;
+            path: string;
+            is_patched: boolean;
+            is_8k?: boolean;
+            size_mb: number;
+        }>;
+    } | null>(null);
     const [selectedPath, setSelectedPath] = useState<string>("");
     const [customPath, setCustomPath] = useState<string>("");
     const [isCheckingPatch, setIsCheckingPatch] = useState(false);
     const [isPatching, setIsPatching] = useState(false);
     const [isDragging, setIsDragging] = useState(false);
     const [showGuide, setShowGuide] = useState(false);
+
+    // 补丁注入生命周期确认弹窗状态
+    const [isConfirmPatchModalOpen, setIsConfirmPatchModalOpen] = useState(false);
+    const [isClaudeRunningOnConfirm, setIsClaudeRunningOnConfirm] = useState(false);
+    const [isPatchOperationLoading, setIsPatchOperationLoading] = useState(false);
 
     const activeTargetPath = customPath.trim() || selectedPath.trim() || undefined;
 
@@ -133,16 +152,50 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
         }
     };
 
-    const handleApplyPatch = async () => {
-        setIsPatching(true);
+    // 点击一键注入：先探测 Claude 是否正在运行，再打开对应的确认弹窗
+    const handleApplyPatchClick = async () => {
+        setIsCheckingPatch(true);
         try {
+            const isRunning = await invoke<boolean>("is_claude_desktop_running", {
+                filePath: activeTargetPath || null,
+            });
+            setIsClaudeRunningOnConfirm(isRunning);
+            setIsConfirmPatchModalOpen(true);
+        } catch (err: any) {
+            console.warn("检查 Claude 运行状态失败，默认进入常规注入确认模式:", err);
+            setIsClaudeRunningOnConfirm(false);
+            setIsConfirmPatchModalOpen(true);
+        } finally {
+            setIsCheckingPatch(false);
+        }
+    };
+
+    // 确认注入补丁的执行流程
+    const handleConfirmExecutePatch = async () => {
+        setIsPatchOperationLoading(true);
+        try {
+            if (isClaudeRunningOnConfirm) {
+                // 1. 如果 Claude 正在运行，先退出
+                await invoke("close_claude_desktop", { filePath: activeTargetPath || null });
+            }
+
+            // 2. 注入 8k 补丁
             const res = await invoke<string>("apply_claude_cowork_patch", { filePath: activeTargetPath || null });
-            showToast(res, "success");
+
+            if (isClaudeRunningOnConfirm) {
+                // 3. 完成后自动重新打开 Claude
+                await invoke("launch_claude_desktop", { filePath: activeTargetPath || null });
+                showToast("已成功注入 8k 深度归档补丁，并已自动重新打开 Claude！", "success");
+            } else {
+                showToast(res, "success");
+            }
+
+            setIsConfirmPatchModalOpen(false);
             await handleCheckPatch();
         } catch (err: any) {
             showToast(String(err), "error");
         } finally {
-            setIsPatching(false);
+            setIsPatchOperationLoading(false);
         }
     };
 
@@ -386,33 +439,33 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
                                 <Wrench size={13} className="text-purple-600 dark:text-purple-400 shrink-0" />
                                 <span className="font-medium">客户端二进制微创补丁工具 (仅 macOS)</span>
                             </div>
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 shrink-0 flex-wrap">
                                 <button
                                     type="button"
                                     onClick={() => handleCheckPatch()}
                                     disabled={isCheckingPatch}
-                                    className="btn btn-xs bg-white dark:bg-base-100 border border-gray-200 dark:border-base-300 hover:border-purple-300 text-gray-700 dark:text-gray-300 text-[11px] gap-1"
+                                    className="btn btn-xs h-7 min-h-[28px] px-3 bg-white dark:bg-base-100 border border-gray-200 dark:border-base-300 hover:border-purple-300 text-gray-700 dark:text-gray-300 text-[11px] gap-1.5 shrink-0 whitespace-nowrap"
                                 >
-                                    <RefreshCw size={11} className={isCheckingPatch ? "animate-spin text-purple-500" : ""} />
-                                    检查补丁状态
+                                    <RefreshCw size={12} className={isCheckingPatch ? "animate-spin text-purple-500" : ""} />
+                                    <span>检查补丁状态</span>
                                 </button>
                                 <button
                                     type="button"
-                                    onClick={handleApplyPatch}
-                                    disabled={isPatching}
-                                    className="btn btn-xs bg-purple-600 hover:bg-purple-700 text-white text-[11px] gap-1 shadow-xs"
+                                    onClick={handleApplyPatchClick}
+                                    disabled={isPatching || isCheckingPatch || isPatchOperationLoading}
+                                    className="btn btn-xs h-7 min-h-[28px] px-3.5 bg-purple-600 hover:bg-purple-700 text-white text-[11px] gap-1.5 shadow-xs shrink-0 whitespace-nowrap"
                                 >
-                                    <Wrench size={11} />
-                                    一键注入补丁
+                                    <Wrench size={12} />
+                                    <span>一键注入补丁</span>
                                 </button>
                                 <button
                                     type="button"
                                     onClick={handleRevertPatch}
-                                    disabled={isPatching}
-                                    className="btn btn-xs bg-gray-200 dark:bg-base-300 hover:bg-gray-300 dark:hover:bg-base-100 text-gray-700 dark:text-gray-300 text-[11px] gap-1"
+                                    disabled={isPatching || isPatchOperationLoading}
+                                    className="btn btn-xs h-7 min-h-[28px] px-3 bg-gray-200 dark:bg-base-300 hover:bg-gray-300 dark:hover:bg-base-100 text-gray-700 dark:text-gray-300 text-[11px] gap-1.5 shrink-0 whitespace-nowrap"
                                 >
-                                    <RotateCcw size={11} />
-                                    还原原生
+                                    <RotateCcw size={12} />
+                                    <span>还原原生</span>
                                 </button>
                             </div>
                         </div>
@@ -433,7 +486,7 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
                                     >
                                         {patchStatus.available_installations.map((inst, idx) => (
                                             <option key={idx} value={inst.path}>
-                                                v{inst.version} ({inst.size_mb} MB) {inst.is_patched ? " [已打补丁]" : " [官方原版]"} - {inst.path}
+                                                v{inst.version} ({inst.size_mb} MB) {inst.is_8k ? " [8k深度补丁]" : inst.is_patched ? " [旧版补丁需升级]" : " [官方原版]"} - {inst.path}
                                             </option>
                                         ))}
                                     </select>
@@ -482,7 +535,11 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
 
                         {patchStatus && (
                             <div className={`p-2 rounded text-[11px] border font-mono ${
-                                patchStatus.is_patched
+                                patchStatus.is_8k
+                                    ? "bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-800/40 text-green-800 dark:text-green-300"
+                                    : patchStatus.is_legacy
+                                    ? "bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800/40 text-amber-800 dark:text-amber-300"
+                                    : patchStatus.is_patched
                                     ? "bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-800/40 text-green-800 dark:text-green-300"
                                     : "bg-gray-100 dark:bg-base-100 border-gray-200 dark:border-base-300 text-gray-700 dark:text-gray-300"
                             }`}>
@@ -574,6 +631,51 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
                         <p>• <strong>聊天记录不丢</strong>：UI 界面历史完整可见，底层自动减负恢复极速响应。</p>
                     </div>
                 </div>
+            </ModalDialog>
+
+            {/* 弹窗 3: 补丁注入运行状态检测与自动重启生命周期弹窗 */}
+            <ModalDialog
+                isOpen={isConfirmPatchModalOpen}
+                title={isClaudeRunningOnConfirm ? "退出 Claude 并注入" : "是否确认注入"}
+                type={isClaudeRunningOnConfirm ? "confirm" : "info"}
+                confirmText={isClaudeRunningOnConfirm ? "退出 Claude 并注入" : "确认注入"}
+                cancelText="取消"
+                isDestructive={isClaudeRunningOnConfirm}
+                isLoading={isPatchOperationLoading}
+                onConfirm={handleConfirmExecutePatch}
+                onCancel={() => !isPatchOperationLoading && setIsConfirmPatchModalOpen(false)}
+            >
+                {isClaudeRunningOnConfirm ? (
+                    <div className="space-y-2.5 text-xs text-gray-600 dark:text-gray-300">
+                        <p className="leading-relaxed">
+                            检测到 <strong>Claude Desktop</strong> 客户端当前正在运行中。
+                        </p>
+                        <div className="p-2.5 bg-amber-50 dark:bg-amber-950/30 rounded-lg border border-amber-200 dark:border-amber-800/40 text-amber-800 dark:text-amber-300 space-y-1">
+                            <div className="font-semibold flex items-center gap-1.5">
+                                <AlertTriangle size={14} className="shrink-0 text-amber-600 dark:text-amber-400" />
+                                <span>注入前需退出客户端</span>
+                            </div>
+                            <p className="text-[11px] leading-relaxed">
+                                注入补丁需要先退出正在运行的 Claude 客户端以解除文件锁并加载新二进制。<strong>注入完成后，系统将自动为您重新打开 Claude。</strong>
+                            </p>
+                        </div>
+                    </div>
+                ) : (
+                    <div className="space-y-2.5 text-xs text-gray-600 dark:text-gray-300">
+                        <p className="leading-relaxed">
+                            当前未检测到运行中的 Claude Desktop，将直接对目标可执行文件进行微创注入。
+                        </p>
+                        <div className="p-2.5 bg-purple-50 dark:bg-purple-950/30 rounded-lg border border-purple-200 dark:border-purple-800/40 text-purple-900 dark:text-purple-200 space-y-1">
+                            <div className="font-semibold flex items-center gap-1.5">
+                                <Sparkles size={14} className="shrink-0 text-purple-600 dark:text-purple-400" />
+                                <span>8k 深度归档微创等长补丁</span>
+                            </div>
+                            <p className="text-[11px] leading-relaxed">
+                                保留最新 8k 活跃消息上下文，超出历史 100% 浓缩归档，压缩率突破 60%+。系统将自动创建 .bak 安全备份，支持随时一键还原。
+                            </p>
+                        </div>
+                    </div>
+                )}
             </ModalDialog>
         </div>
     );

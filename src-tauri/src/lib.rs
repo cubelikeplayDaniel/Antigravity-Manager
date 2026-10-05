@@ -849,6 +849,9 @@ pub fn run() {
             commands::check_claude_cowork_patch,
             commands::apply_claude_cowork_patch,
             commands::revert_claude_cowork_patch,
+            commands::is_claude_desktop_running,
+            commands::close_claude_desktop,
+            commands::launch_claude_desktop,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
