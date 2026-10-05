@@ -854,20 +854,13 @@ pub fn normalize_to_standard_id(model_name: &str) -> Option<String> {
         return Some("gemini-3-pro-high".to_string());
     }
 
-    // 5. Claude 系列 (Issue #3506: 解耦 Opus, Sonnet, Haiku, Fable 为独立保护组，避免单模型 429 熔断整池)
-    if lower.contains("opus") {
-        return Some("claude-opus".to_string());
-    }
-    if lower.contains("sonnet") {
-        return Some("claude-sonnet".to_string());
-    }
-    if lower.contains("haiku") {
-        return Some("claude-haiku".to_string());
-    }
-    if lower.contains("fable") {
-        return Some("claude-fable".to_string());
-    }
-    if lower.contains("claude") {
+    // 4. Claude 系列 (上游同一账号下共享配额池，统一归一化为 'claude' 保护组)
+    if lower.contains("claude")
+        || lower.contains("opus")
+        || lower.contains("sonnet")
+        || lower.contains("haiku")
+        || lower.contains("fable")
+    {
         return Some("claude".to_string());
     }
 
@@ -1077,14 +1070,14 @@ mod tests {
             "gemini-3.1-flash-lite"
         );
 
-        // Test Normalization (Issue #3506: Opus, Sonnet decoupled into independent protection buckets)
+        // Test Normalization (Claude 系列全部归一化至统一保护组 'claude')
         assert_eq!(
             normalize_to_standard_id("claude-opus-4-6-thinking"),
-            Some("claude-opus".to_string())
+            Some("claude".to_string())
         );
         assert_eq!(
             normalize_to_standard_id("claude-sonnet-4-5"),
-            Some("claude-sonnet".to_string())
+            Some("claude".to_string())
         );
 
         // [Regression] gemini-3-pro-image must NOT be grouped with gemini-3-pro-high
@@ -1390,31 +1383,31 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize_to_standard_id_claude_submodel_isolation() {
-        // Issue #3506: 解耦 Opus, Sonnet, Haiku 为独立保护组，避免单模型 429 熔断整池
+    fn test_normalize_to_standard_id_claude_unified_pool() {
+        // Claude 系列在同一账号内共享配额池，统一归一化为 'claude' 保护组
         assert_eq!(
             normalize_to_standard_id("claude-opus-5-5-medium"),
-            Some("claude-opus".to_string())
+            Some("claude".to_string())
         );
         assert_eq!(
             normalize_to_standard_id("claude-opus-4-6-thinking"),
-            Some("claude-opus".to_string())
+            Some("claude".to_string())
         );
         assert_eq!(
             normalize_to_standard_id("claude-sonnet-5-5-high"),
-            Some("claude-sonnet".to_string())
+            Some("claude".to_string())
         );
         assert_eq!(
             normalize_to_standard_id("claude-sonnet-4-6"),
-            Some("claude-sonnet".to_string())
+            Some("claude".to_string())
         );
         assert_eq!(
             normalize_to_standard_id("claude-haiku-4-5"),
-            Some("claude-haiku".to_string())
+            Some("claude".to_string())
         );
         assert_eq!(
             normalize_to_standard_id("claude-fable-5"),
-            Some("claude-fable".to_string())
+            Some("claude".to_string())
         );
         assert_eq!(
             normalize_to_standard_id("claude"),
