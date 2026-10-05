@@ -600,7 +600,7 @@ pub async fn check_claude_cowork_patch(
         let desc = if is_8k {
             "已成功注入 8k 深度归档补丁 (保留最新 8k 活跃消息上下文，超出历史 100% 浓缩归档，压缩率与净空大幅提升)"
         } else {
-            "已注入深度归档补丁 (保留活跃消息上下文，超出历史浓缩归档)"
+            "检测到旧版补丁 (35k/return 0)，建议点击「一键注入补丁」平滑升级为 8k 深度归档以获得超 60% 压缩率"
         };
         return Ok(ClaudePatchStatus {
             file_path: path.to_string_lossy().to_string(),
