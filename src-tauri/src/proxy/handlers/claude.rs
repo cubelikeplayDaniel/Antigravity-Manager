@@ -292,6 +292,36 @@ fn calculate_claude_fixed_overhead(request: &ClaudeRequest) -> u32 {
     overhead
 }
 
+/// 计算 Cowork 响应式压缩时抛出 400 假限额的最优参数 (report_tokens, target_limit)
+///
+/// ### 算法原理（基于对 Claude Desktop 内核 bundle 的反编译逆向分析）：
+/// 1. 客户端在收到 400 且匹配 `prompt is too long: (\d+) tokens > (\d+) maximum` 时，
+///    提取 `tokenGap = actual - maximum`。
+/// 2. 客户端进入 `seeded` 压缩流程时，计算 `Ne = tokenGap - last_turn_tokens`。
+/// 3. 客户端调用 `CHt(group_tokens, b-1, Ne)`，从倒数第二轮（h = b-2）向前累加历史轮次的 Token 数，
+///    累加直到总和达到 `Ne`，得到所需轮次数 `g`。
+/// 4. 关键陷阱（二分折半与过度保留）：
+///    - 若 `g >= n - 1`（即所需轮次达到上限），客户端会触发防灾难性清空保底：
+///      `if (g >= n - 1) return Math.max(1, Math.floor(n / 2));`
+///      强制降级为仅裁剪一半历史，导致 547 条消息被硬编码切掉 270 条、保留 277 条（残留高达 145.7k）！
+///    - 客户端在主循环中设置保留组数 `K = 1 + g`，保留尾部的 `K` 组消息（`s.slice(b - K)`），
+///      并将前半部的 `b - K` 组消息送入摘要模型提炼。
+/// 5. 破局之道：
+///    - 若 `tokenGap` 极小（使 `Ne <= 0`，即 `tokenGap <= last_turn_tokens`），
+///      客户端的 `if (Ne > 0)` 分支直接不执行，`K` 保持初始默认值 `1`！
+///    - 此时客户端将仅保留最后 1 组最新用户输入（`s.slice(b - 1)`），将前面所有的历史轮次（`0..b-1`）
+///      完整打包送入摘要请求，单次彻底压降至黄金基线（摘要 ~4k + 1 轮 ~500 + 工具 ~26k ≈ 30.5k tokens）！
+///    - 为安全触发且防止部分校验要求正向 Gap，我们返回极小的正向 Gap（如 500 tokens），
+///      此时 `Ne = 500 - last_turn_tokens <= 0`，既能完美触发 `prompt is too long`，又能让客户端
+///      跳过 `CHt` 的尾部膨胀，平滑保留 1 轮最新输入并压缩全部历史！
+pub fn calculate_cowork_pruning_target(_est_tokens: u32, target_limit: u32) -> (u32, u32) {
+    // 赋予极小的正向差额 (500 tokens)，确保 actual > maximum 严格成立，
+    // 同时使 Ne = tokenGap - last_turn_tokens <= 0，规避 CHt 倒算二分折半陷阱
+    let safe_gap = 500u32;
+    let report_tokens = target_limit.saturating_add(safe_gap);
+    (report_tokens, target_limit)
+}
+
 /// 构造 Anthropic 原生 SSE 流式响应体，回显真实 Compacted 结果
 fn make_compact_sse_response(text: &str, model: &str, input_tokens: u32) -> String {
     let msg_id = format!(
@@ -1401,14 +1431,15 @@ pub async fn handle_messages(
             }
         }
 
-        let report_tokens = est_tokens.max(target_limit + 10_000);
+        let (report_tokens, client_target_limit) =
+            calculate_cowork_pruning_target(est_tokens, target_limit);
         let err_msg = format!(
             "prompt is too long: {} tokens > {} maximum",
-            report_tokens, target_limit
+            report_tokens, client_target_limit
         );
         tracing::warn!(
-            "[{}] [Manual-Compact] Intercepted ./compact for session {} (tokens={}, fixed_overhead={}), responding with 400 fake alarm (gap target: {} tokens) to trigger deep client-side compact",
-            trace_id, session_key, est_tokens, fixed_overhead, target_limit
+            "[{}] [Manual-Compact] Intercepted ./compact for session {} (tokens={}, fixed_overhead={}), responding with 400 fake alarm (client limit: {} tokens) to trigger deep client-side compact",
+            trace_id, session_key, est_tokens, fixed_overhead, client_target_limit
         );
 
         return (
@@ -1466,10 +1497,11 @@ pub async fn handle_messages(
                     },
                 );
                 PENDING_COMPACT_SESSIONS.insert(session_key.clone(), now);
-                let report_tokens = est_tokens.max(target_limit + 10_000);
+                let (report_tokens, client_target_limit) =
+                    calculate_cowork_pruning_target(est_tokens, target_limit);
                 let err_msg = format!(
                     "prompt is too long: {} tokens > {} maximum",
-                    report_tokens, target_limit
+                    report_tokens, client_target_limit
                 );
                 return (
                     StatusCode::BAD_REQUEST,
@@ -4335,5 +4367,26 @@ mod warmup_tests {
 
         // 必须识别为 Cowork，绝不能被 x-app: cli 误杀！
         assert!(is_cowork_session(&req, &headers));
+    }
+
+    #[test]
+    fn test_calculate_cowork_pruning_target_avoids_binary_fallback() {
+        let est_tokens = 173_683;
+        let target_limit = 41_518;
+
+        let (report_tokens, client_limit) =
+            calculate_cowork_pruning_target(est_tokens, target_limit);
+
+        // 1. 严格满足 actual > maximum
+        assert!(report_tokens > client_limit);
+        assert_eq!(client_limit, target_limit);
+
+        // 2. 差额为受控的小正向 Gap (500 tokens)
+        let gap = report_tokens - client_limit;
+        assert_eq!(gap, 500);
+
+        // 3. 差额足以让客户端 last_turn_tokens (~1000) 使得 Ne = gap - last_turn <= 0，
+        // 从而直接跳过 CHt 倒算二分折半保护，实现深度全量压缩
+        assert!(gap < 1_000);
     }
 }
