@@ -226,7 +226,9 @@ fn calculate_claude_fixed_overhead(request: &ClaudeRequest) -> u32 {
             let schema_len = tool
                 .input_schema
                 .as_ref()
-                .map(crate::proxy::pipeline::estimator::estimate_tokens)
+                .map(|s| {
+                    crate::proxy::pipeline::estimator::estimate_tokens_from_str(&s.to_string())
+                })
                 .unwrap_or(0);
             overhead += name_len + desc_len + schema_len + 30;
         }
@@ -1980,12 +1982,12 @@ pub async fn handle_messages(
                 let mut retry_this_account = false;
 
                 // Loop to skip heartbeats during peek
+                let peek_timeout_secs = if is_compaction_request { 180 } else { 30 };
                 loop {
                     match tokio::time::timeout(
-                        // [FIX #Bug1] Reduced from 300s to 30s.
-                        // Gemini sends first chunk within 5s normally; 30s allows for retries
-                        // without causing the 5-minute hang users observed.
-                        std::time::Duration::from_secs(30),
+                        // [FIX #Bug1] Reduced from 300s to 30s for normal requests;
+                        // Extended to 180s for compaction summary requests due to heavy prompt processing (Fixes #3614).
+                        std::time::Duration::from_secs(peek_timeout_secs),
                         claude_stream.next(),
                     )
                     .await
@@ -2040,10 +2042,12 @@ pub async fn handle_messages(
                         }
                         Err(_) => {
                             tracing::warn!(
-                                "[{}] Timeout waiting for first data (30s), retrying...",
-                                trace_id
+                                "[{}] Timeout waiting for first data ({}s), retrying...",
+                                trace_id,
+                                peek_timeout_secs
                             );
-                            last_error = "Timeout waiting for first data".to_string();
+                            last_error =
+                                format!("Timeout waiting for first data ({}s)", peek_timeout_secs);
                             retry_this_account = true;
                             break;
                         }
@@ -3962,5 +3966,131 @@ mod warmup_tests {
 
         // Clean up
         COWORK_JUST_COMPACTED_CACHE.remove(&session_key);
+    }
+
+    #[test]
+    fn test_cowork_auto_compact_triggers_with_tool_schemas_and_thinking_signatures() {
+        use crate::proxy::mappers::claude::models::{ContentBlock, Message, Tool};
+
+        // Construct realistic Cowork MCP tools with schema and descriptions
+        let mut tools = Vec::new();
+        for i in 0..15 {
+            let schema = serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Absolute file path" },
+                    "content": { "type": "string", "description": "File body text" },
+                    "options": {
+                        "type": "object",
+                        "properties": {
+                            "encoding": { "type": "string" },
+                            "flag": { "type": "string" }
+                        }
+                    }
+                },
+                "required": ["path"]
+            });
+            tools.push(Tool {
+                type_: None,
+                name: Some(format!("mcp__cowork_tool_{}", i)),
+                description: Some(format!(
+                    "Cowork tool {} with extensive capabilities for workspace interaction",
+                    i
+                )),
+                input_schema: Some(schema),
+            });
+        }
+
+        // Construct 20 turns of assistant messages containing thinking blocks with signatures
+        let mut messages = Vec::new();
+        for i in 0..20 {
+            messages.push(Message {
+                role: "user".to_string(),
+                content: crate::proxy::mappers::claude::models::MessageContent::String(format!(
+                    "User turn {}",
+                    i
+                )),
+            });
+            messages.push(Message {
+                role: "assistant".to_string(),
+                content: crate::proxy::mappers::claude::models::MessageContent::Array(vec![
+                    ContentBlock::Thinking {
+                        thinking: "Analyzing problem...".to_string(),
+                        signature: Some("A".repeat(4000)), // ~1000 tokens signature per turn
+                        cache_control: None,
+                    },
+                    ContentBlock::Text {
+                        text: format!("Assistant answer {}", i),
+                    },
+                ]),
+            });
+        }
+
+        let req = ClaudeRequest {
+            model: "claude-3-7-sonnet".to_string(),
+            messages,
+            system: Some(crate::proxy::mappers::claude::models::SystemPrompt::String(
+                "You are Claude with Cowork extension active.".repeat(100),
+            )),
+            tools: Some(tools),
+            ..Default::default()
+        };
+
+        let req_json = serde_json::to_value(&req).expect("serialize ClaudeRequest");
+        let est_tokens = crate::proxy::pipeline::estimate_tokens(&req_json);
+        let fixed_overhead = calculate_claude_fixed_overhead(&req);
+        let target_limit = (fixed_overhead + 15_000).max(35_000);
+        let effective_threshold = calculate_effective_auto_compact_threshold(100_000, target_limit);
+
+        // 20 turns * 4000 chars = 80,000 chars = ~20,000 tokens in signatures alone.
+        // Plus system prompt (~1,100 tokens), plus tools (~3,000 tokens), plus message texts.
+        // Total should comfortably be >= 25,000 tokens.
+        assert!(est_tokens >= 25_000, "est_tokens: {}", est_tokens);
+        assert!(fixed_overhead > 1_500, "fixed_overhead: {}", fixed_overhead);
+
+        // Now test with 100 turns so that context > 100,000 tokens
+        let mut large_messages = Vec::new();
+        for i in 0..60 {
+            large_messages.push(Message {
+                role: "user".to_string(),
+                content: crate::proxy::mappers::claude::models::MessageContent::String(format!(
+                    "User turn {}",
+                    i
+                )),
+            });
+            large_messages.push(Message {
+                role: "assistant".to_string(),
+                content: crate::proxy::mappers::claude::models::MessageContent::Array(vec![
+                    ContentBlock::Thinking {
+                        thinking: "Complex chain of thought exploration...".repeat(20),
+                        signature: Some("A".repeat(6000)), // ~1500 tokens signature per turn
+                        cache_control: None,
+                    },
+                    ContentBlock::Text {
+                        text: format!("Assistant answer {}", i),
+                    },
+                ]),
+            });
+        }
+        let large_req = ClaudeRequest {
+            model: "claude-3-7-sonnet".to_string(),
+            messages: large_messages,
+            system: Some(crate::proxy::mappers::claude::models::SystemPrompt::String(
+                "You are Claude with Cowork extension active.".repeat(1000),
+            )),
+            tools: req.tools.clone(),
+            ..Default::default()
+        };
+        let large_json = serde_json::to_value(&large_req).expect("serialize large ClaudeRequest");
+        let large_est = crate::proxy::pipeline::estimate_tokens(&large_json);
+
+        // Should exceed 100k threshold and trigger compaction gatekeeper
+        assert!(
+            large_est >= effective_threshold && large_est > target_limit,
+            "large_est ({}) must trigger gatekeeper (threshold={}, target_limit={})",
+            large_est,
+            effective_threshold,
+            target_limit
+        );
     }
 }

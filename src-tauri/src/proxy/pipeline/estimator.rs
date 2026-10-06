@@ -220,8 +220,15 @@ impl PipelineTokenEstimator {
                         }
                         if let Some(thought) = part.get("thought").and_then(Value::as_bool) {
                             if thought {
-                                total += 100; // 思维块签名与元数据开销
+                                total += 100; // 思维块基础开销
                             }
+                        }
+                        if let Some(sig) = part
+                            .get("thoughtSignature")
+                            .or_else(|| part.get("thought_signature"))
+                            .and_then(Value::as_str)
+                        {
+                            total += estimate_tokens_from_str(sig);
                         }
                         if let Some(inline_data) =
                             part.get("inlineData").or_else(|| part.get("inline_data"))
@@ -266,14 +273,10 @@ impl PipelineTokenEstimator {
             }
         }
 
-        // tools (functionDeclarations)
+        // tools (functionDeclarations / codeExecution / googleSearch)
         if let Some(tools) = body.get("tools").and_then(Value::as_array) {
             for tool in tools {
-                let name_len = tool
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .map_or(10, estimate_tokens_from_str);
-                total += name_len + 60;
+                total += estimate_tokens_from_str(&tool.to_string());
             }
         }
 
@@ -316,12 +319,21 @@ impl PipelineTokenEstimator {
                                     if let Some(t) = block.get("thinking").and_then(Value::as_str) {
                                         total += estimate_tokens_from_str(t);
                                     }
-                                    total += 100;
+                                    if let Some(sig) = block
+                                        .get("signature")
+                                        .or_else(|| block.get("thoughtSignature"))
+                                        .or_else(|| block.get("thought_signature"))
+                                        .and_then(Value::as_str)
+                                    {
+                                        total += estimate_tokens_from_str(sig);
+                                    }
+                                    total += 100; // 思维块基础开销
                                 }
                                 Some("redacted_thinking") => {
                                     if let Some(d) = block.get("data").and_then(Value::as_str) {
                                         total += estimate_tokens_from_str(d);
                                     }
+                                    total += 100;
                                 }
                                 Some("tool_use") | Some("server_tool_use") => {
                                     total += 20;
@@ -416,14 +428,10 @@ impl PipelineTokenEstimator {
             }
         }
 
-        // tools (对齐官方标准: 每个工具声明平均按 ~70 tokens 紧凑计入)
+        // tools (完整计入 name, description 及 input_schema 结构定义)
         if let Some(tools) = body.get("tools").and_then(Value::as_array) {
             for tool in tools {
-                let name_len = tool
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .map_or(10, estimate_tokens_from_str);
-                total += name_len + 60;
+                total += estimate_tokens_from_str(&tool.to_string());
             }
         }
 
@@ -548,5 +556,137 @@ mod tests {
 
         let t2 = PipelineTokenEstimator::estimate_tokens(&body);
         assert_eq!(t1, t2);
+    }
+
+    #[test]
+    fn test_pipeline_estimator_claude_tools_with_schemas_and_descriptions() {
+        let body = json!({
+            "model": "claude-3-5-sonnet",
+            "system": "You are a helpful assistant.",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Execute tool"
+                }
+            ],
+            "tools": [
+                {
+                    "name": "complex_tool",
+                    "description": "This is a detailed description explaining what complex_tool does, including parameter details, return formats, edge cases, and behavior constraints.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "command": {
+                                "type": "string",
+                                "description": "The command string to execute in a secure isolated environment"
+                            },
+                            "timeout_ms": {
+                                "type": "integer",
+                                "description": "Timeout in milliseconds for the operation"
+                            },
+                            "environment_variables": {
+                                "type": "object",
+                                "additionalProperties": { "type": "string" },
+                                "description": "Key-value pairs of environment variables to export"
+                            }
+                        },
+                        "required": ["command"]
+                    }
+                }
+            ]
+        });
+
+        let tokens = PipelineTokenEstimator::estimate_tokens(&body);
+        // The description and schema alone contain > 400 characters (~100 tokens).
+        // System prompt contains ~30 chars (~8 tokens), message ~15 chars (~4 tokens).
+        // The old buggy logic only counted name_len + 60 (~73 tokens) for tools,
+        // resulting in ~85 tokens total.
+        // With schemas and descriptions accounted for, tokens must be >= 120.
+        assert!(
+            tokens >= 120,
+            "Expected tokens >= 120, but got {} (indicates schema/description undercounted)",
+            tokens
+        );
+    }
+
+    #[test]
+    fn test_pipeline_estimator_claude_thinking_signature() {
+        // 1000 characters base64 signature
+        let dummy_sig = "A".repeat(1000);
+        let body = json!({
+            "model": "claude-3-7-sonnet",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "thinking",
+                            "thinking": "Short thought",
+                            "signature": dummy_sig
+                        },
+                        {
+                            "type": "text",
+                            "text": "Hello"
+                        }
+                    ]
+                }
+            ]
+        });
+
+        let tokens = PipelineTokenEstimator::estimate_tokens(&body);
+        // 1000 chars of base64 signature is ~250 tokens.
+        // Old logic only added fixed 100 tokens for thinking block, ignoring signature.
+        // With signature accounted for, tokens must be >= 300.
+        assert!(
+            tokens >= 300,
+            "Expected tokens >= 300, but got {} (indicates thinking signature undercounted)",
+            tokens
+        );
+    }
+
+    #[test]
+    fn test_pipeline_estimator_gemini_thought_signature_and_functions() {
+        let dummy_sig = "B".repeat(800);
+        let body = json!({
+            "contents": [
+                {
+                    "role": "model",
+                    "parts": [
+                        {
+                            "thought": true,
+                            "text": "Deep thinking",
+                            "thoughtSignature": dummy_sig
+                        }
+                    ]
+                }
+            ],
+            "tools": [
+                {
+                    "functionDeclarations": [
+                        {
+                            "name": "calc_tool",
+                            "description": "Calculates detailed mathematical equations and returns structured results.",
+                            "parameters": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "formula": { "type": "STRING", "description": "Formula expression" }
+                                },
+                                "required": ["formula"]
+                            }
+                        }
+                    ]
+                }
+            ]
+        });
+
+        let tokens = PipelineTokenEstimator::estimate_tokens(&body);
+        // 800 chars signature = ~200 tokens.
+        // function declaration with schema/desc = ~80 tokens.
+        // Total should be >= 280 tokens.
+        assert!(
+            tokens >= 280,
+            "Expected tokens >= 280, but got {} (indicates gemini thoughtSignature or tools undercounted)",
+            tokens
+        );
     }
 }
