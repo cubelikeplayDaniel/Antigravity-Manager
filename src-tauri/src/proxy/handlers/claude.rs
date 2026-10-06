@@ -197,32 +197,67 @@ fn is_manual_compact_command(request: &ClaudeRequest) -> bool {
     false
 }
 
-/// 判断当前请求是否属于 Claude Desktop Cowork / Code 模式或相关会话
-/// 通过工具前缀（mcp__cowork, mcp__workspace, mcp__ccd_）、请求头（claude-desktop, desktop_app）
-/// 以及 Billing/System prompt 特征全面识别。
+/// 判断当前请求是否属于 Claude Desktop Cowork 专属会话
+/// 关键防护：严格排除 Claude Code 模式（CLI / Desktop Code Tab），防止日常代码工程被误触截断。
+/// 仅精准放行真正的 Cowork 模式（带 mcp__cowork_* / mcp__workspace_* 工具或 local-agent 运行环境）。
 pub fn is_cowork_session(request: &ClaudeRequest, headers: &HeaderMap) -> bool {
+    // 1. 显式排除 Claude Code 模式（一票否决权）：
+    // 特征：包含 mcp__ccd_* 工具前缀、x-app: cli、x-claude-code-session-id 标头、claude-desktop-3p、或 "You are Claude Code"
+    let is_code_mode = request.tools.as_ref().map_or(false, |tools| {
+        tools.iter().any(|t| t.get_name().starts_with("mcp__ccd_"))
+    }) || headers
+        .get("x-app")
+        .and_then(|v| v.to_str().ok())
+        .map_or(false, |val| val == "cli")
+        || headers.contains_key("x-claude-code-session-id")
+        || headers.iter().any(|(_, v)| {
+            v.to_str().map_or(false, |val| {
+                val.contains("claude-desktop-3p")
+            })
+        })
+        || request.system.as_ref().map_or(false, |sys| match sys {
+            crate::proxy::mappers::claude::models::SystemPrompt::String(s) => {
+                s.contains("claude-desktop-3p") || s.contains("You are Claude Code")
+            }
+            crate::proxy::mappers::claude::models::SystemPrompt::Array(arr) => {
+                arr.iter().any(|b| {
+                    b.text.contains("claude-desktop-3p") || b.text.contains("You are Claude Code")
+                })
+            }
+        });
+
+    if is_code_mode {
+        return false;
+    }
+
+    // 2. 识别真正的 Cowork 会话：
+    // 特征：带有 mcp__cowork_* 或 mcp__workspace_* 专属工具，
+    // 或运行环境为 local-agent / Claude Desktop 内置原生日常工作区
     let has_cowork_tool = request.tools.as_ref().map_or(false, |tools| {
         tools.iter().any(|t| {
             let n = t.get_name();
-            n.starts_with("mcp__cowork")
-                || n.starts_with("mcp__workspace")
-                || n.starts_with("mcp__ccd_")
+            n.starts_with("mcp__cowork") || n.starts_with("mcp__workspace")
         })
     });
-    let has_desktop_header = headers.iter().any(|(_, v)| {
+
+    let has_cowork_agent = headers.iter().any(|(_, v)| {
         v.to_str().map_or(false, |val| {
-            val.contains("claude-desktop") || val.contains("desktop_app")
+            val.contains("local-agent")
         })
-    });
-    let has_desktop_billing = request.system.as_ref().map_or(false, |sys| match sys {
+    }) || request.system.as_ref().map_or(false, |sys| match sys {
         crate::proxy::mappers::claude::models::SystemPrompt::String(s) => {
-            s.contains("claude-desktop")
+            s.contains("local-agent")
+                || s.contains("operating as an agent inside the Claude desktop app")
         }
         crate::proxy::mappers::claude::models::SystemPrompt::Array(arr) => {
-            arr.iter().any(|b| b.text.contains("claude-desktop"))
+            arr.iter().any(|b| {
+                b.text.contains("local-agent")
+                    || b.text.contains("operating as an agent inside the Claude desktop app")
+            })
         }
     });
-    has_cowork_tool || has_desktop_header || has_desktop_billing
+
+    has_cowork_tool || has_cowork_agent
 }
 
 /// 计算 Claude 请求中非对话历史的固定开销 (Fixed Overhead: System Prompt + Tool 声明)
@@ -1167,22 +1202,6 @@ pub async fn handle_messages(
                 COMPACTION_IMMUNITY_LEASES.remove(&session_key);
                 false
             }
-        } else if is_continuation_detected {
-            // 接续标记保底：若检测到接续标记但无活跃租约，发放滑动窗口租约
-            let now = std::time::Instant::now();
-            COMPACTION_IMMUNITY_LEASES.insert(
-                session_key.clone(),
-                CompactionImmunityLease {
-                    created_at: now,
-                    last_touched: now,
-                    consumed: true,
-                },
-            );
-            tracing::info!(
-                "[{}] [Lifecycle] Continuation detected for session {}, minted sliding window lease",
-                trace_id, session_key
-            );
-            true
         } else {
             false
         }
@@ -1418,7 +1437,6 @@ pub async fn handle_messages(
     if experimental.enable_cowork_auto_compact
         && !is_compaction_request
         && !is_post_compaction
-        && !is_continuation_detected
         && !is_manual_compact
         && !is_in_compaction
     {
@@ -4117,11 +4135,13 @@ mod warmup_tests {
     }
 
     #[test]
-    fn test_is_cowork_session_identifies_desktop_and_ccd_tools() {
+    fn test_is_cowork_session_identifies_cowork_and_excludes_code_mode() {
         use axum::http::HeaderMap;
         use crate::proxy::mappers::claude::models::{SystemBlock, SystemPrompt, Tool};
 
-        // 1. Session with mcp__ccd_* tools (Claude Desktop Code tab)
+        let headers_empty = HeaderMap::new();
+
+        // 1. Session with mcp__ccd_* tools (Claude Desktop Code tab) -> MUST BE EXCLUDED
         let req_ccd = ClaudeRequest {
             tools: Some(vec![Tool {
                 type_: None,
@@ -4131,32 +4151,10 @@ mod warmup_tests {
             }]),
             ..Default::default()
         };
-        let headers_empty = HeaderMap::new();
-        assert!(is_cowork_session(&req_ccd, &headers_empty));
+        assert!(!is_cowork_session(&req_ccd, &headers_empty));
 
-        // 2. Session with mcp__cowork_* tools
-        let req_cowork = ClaudeRequest {
-            tools: Some(vec![Tool {
-                type_: None,
-                name: Some("mcp__cowork_file_read".to_string()),
-                description: None,
-                input_schema: None,
-            }]),
-            ..Default::default()
-        };
-        assert!(is_cowork_session(&req_cowork, &headers_empty));
-
-        // 3. Session with desktop platform header
-        let mut headers_desktop = HeaderMap::new();
-        headers_desktop.insert(
-            "anthropic-client-platform",
-            "desktop_app".parse().unwrap(),
-        );
-        let req_plain = ClaudeRequest::default();
-        assert!(is_cowork_session(&req_plain, &headers_desktop));
-
-        // 4. Session with billing header containing claude-desktop
-        let req_billing = ClaudeRequest {
+        // 2. Session with claude-desktop-3p billing header (Claude Code Desktop) -> MUST BE EXCLUDED
+        let req_code_billing = ClaudeRequest {
             system: Some(SystemPrompt::Array(vec![
                 SystemBlock {
                     block_type: "text".to_string(),
@@ -4165,9 +4163,51 @@ mod warmup_tests {
             ])),
             ..Default::default()
         };
-        assert!(is_cowork_session(&req_billing, &headers_empty));
+        assert!(!is_cowork_session(&req_code_billing, &headers_empty));
 
-        // 5. Standard external agent request without desktop markers must NOT be classified as cowork
+        // 3. Session with x-app: cli header -> MUST BE EXCLUDED
+        let mut headers_cli = HeaderMap::new();
+        headers_cli.insert("x-app", "cli".parse().unwrap());
+        let req_plain = ClaudeRequest::default();
+        assert!(!is_cowork_session(&req_plain, &headers_cli));
+
+        // 4. Session with mcp__cowork_* tools -> MUST BE RECOGNIZED AS COWORK
+        let req_cowork = ClaudeRequest {
+            tools: Some(vec![Tool {
+                type_: None,
+                name: Some("mcp__cowork__present_files".to_string()),
+                description: None,
+                input_schema: None,
+            }]),
+            ..Default::default()
+        };
+        assert!(is_cowork_session(&req_cowork, &headers_empty));
+
+        // 5. Session with mcp__workspace_* tools -> MUST BE RECOGNIZED AS COWORK
+        let req_workspace = ClaudeRequest {
+            tools: Some(vec![Tool {
+                type_: None,
+                name: Some("mcp__workspace__bash".to_string()),
+                description: None,
+                input_schema: None,
+            }]),
+            ..Default::default()
+        };
+        assert!(is_cowork_session(&req_workspace, &headers_empty));
+
+        // 6. Session with local-agent billing header -> MUST BE RECOGNIZED AS COWORK
+        let req_local_agent = ClaudeRequest {
+            system: Some(SystemPrompt::Array(vec![
+                SystemBlock {
+                    block_type: "text".to_string(),
+                    text: "x-anthropic-billing-header: cc_version=2.1; cc_entrypoint=local-agent;".to_string(),
+                },
+            ])),
+            ..Default::default()
+        };
+        assert!(is_cowork_session(&req_local_agent, &headers_empty));
+
+        // 7. Standard external agent request without cowork markers -> MUST NOT be classified as cowork
         let req_standard = ClaudeRequest {
             tools: Some(vec![Tool {
                 type_: None,
@@ -4209,5 +4249,37 @@ mod warmup_tests {
         });
 
         assert!(has_compaction_system);
+    }
+
+    #[test]
+    fn test_post_compaction_continuation_does_not_grant_lifelong_immunity() {
+        use crate::proxy::mappers::claude::models::{Message, MessageContent};
+
+        // 包含接续横幅的消息
+        let req_with_cont = ClaudeRequest {
+            model: "claude-fable-5".to_string(),
+            messages: vec![
+                Message {
+                    role: "user".to_string(),
+                    content: MessageContent::String(
+                        "This session is being continued from a previous conversation that ran out of context".to_string(),
+                    ),
+                },
+                Message {
+                    role: "assistant".to_string(),
+                    content: MessageContent::String("Understood.".to_string()),
+                },
+            ],
+            ..Default::default()
+        };
+
+        // detect_post_compaction_continuation 能识别横幅
+        assert!(detect_post_compaction_continuation(&req_with_cont));
+
+        // 当租约已过期/不存在时，绝不自动续发租约
+        let session_key = "test_expired_continuation_session".to_string();
+        COMPACTION_IMMUNITY_LEASES.remove(&session_key);
+
+        assert!(!COMPACTION_IMMUNITY_LEASES.contains_key(&session_key));
     }
 }
