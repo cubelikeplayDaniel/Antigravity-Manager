@@ -202,29 +202,25 @@ fn is_manual_compact_command(request: &ClaudeRequest) -> bool {
 /// 仅精准放行真正的 Cowork 模式（带 mcp__cowork_* / mcp__workspace_* 工具或 local-agent 运行环境）。
 pub fn is_cowork_session(request: &ClaudeRequest, headers: &HeaderMap) -> bool {
     // 1. 显式排除 Claude Code 模式（一票否决权）：
-    // 特征：包含 mcp__ccd_* 工具前缀、x-app: cli、x-claude-code-session-id 标头、claude-desktop-3p、或 "You are Claude Code"
+    // 关键认知：Claude Desktop 的 Cowork 模式底层同样基于 agent-sdk，也会携带 x-app: cli 与 x-claude-code-session-id，
+    // 因此绝不能用这两个通用标头判定 Code 模式！
+    // 真正的 Code 模式专属特征为：包含 mcp__ccd_* 工具前缀、claude-desktop-3p 标识、或系统提示词声明 "You are Claude Code"
     let is_code_mode = request.tools.as_ref().map_or(false, |tools| {
         tools.iter().any(|t| t.get_name().starts_with("mcp__ccd_"))
-    }) || headers
-        .get("x-app")
-        .and_then(|v| v.to_str().ok())
-        .map_or(false, |val| val == "cli")
-        || headers.contains_key("x-claude-code-session-id")
-        || headers.iter().any(|(_, v)| {
-            v.to_str().map_or(false, |val| {
-                val.contains("claude-desktop-3p")
-            })
+    }) || headers.iter().any(|(_, v)| {
+        v.to_str().map_or(false, |val| {
+            val.contains("claude-desktop-3p")
         })
-        || request.system.as_ref().map_or(false, |sys| match sys {
-            crate::proxy::mappers::claude::models::SystemPrompt::String(s) => {
-                s.contains("claude-desktop-3p") || s.contains("You are Claude Code")
-            }
-            crate::proxy::mappers::claude::models::SystemPrompt::Array(arr) => {
-                arr.iter().any(|b| {
-                    b.text.contains("claude-desktop-3p") || b.text.contains("You are Claude Code")
-                })
-            }
-        });
+    }) || request.system.as_ref().map_or(false, |sys| match sys {
+        crate::proxy::mappers::claude::models::SystemPrompt::String(s) => {
+            s.contains("claude-desktop-3p") || s.contains("You are Claude Code")
+        }
+        crate::proxy::mappers::claude::models::SystemPrompt::Array(arr) => {
+            arr.iter().any(|b| {
+                b.text.contains("claude-desktop-3p") || b.text.contains("You are Claude Code")
+            })
+        }
+    });
 
     if is_code_mode {
         return false;
@@ -4165,11 +4161,14 @@ mod warmup_tests {
         };
         assert!(!is_cowork_session(&req_code_billing, &headers_empty));
 
-        // 3. Session with x-app: cli header -> MUST BE EXCLUDED
-        let mut headers_cli = HeaderMap::new();
-        headers_cli.insert("x-app", "cli".parse().unwrap());
-        let req_plain = ClaudeRequest::default();
-        assert!(!is_cowork_session(&req_plain, &headers_cli));
+        // 3. Session with "You are Claude Code" system prompt -> MUST BE EXCLUDED
+        let req_code_sys = ClaudeRequest {
+            system: Some(SystemPrompt::String(
+                "You are Claude Code, Anthropic's official CLI for Claude.".to_string(),
+            )),
+            ..Default::default()
+        };
+        assert!(!is_cowork_session(&req_code_sys, &headers_empty));
 
         // 4. Session with mcp__cowork_* tools -> MUST BE RECOGNIZED AS COWORK
         let req_cowork = ClaudeRequest {
@@ -4195,17 +4194,24 @@ mod warmup_tests {
         };
         assert!(is_cowork_session(&req_workspace, &headers_empty));
 
-        // 6. Session with local-agent billing header -> MUST BE RECOGNIZED AS COWORK
+        // 6. Session with local-agent billing header AND x-app: cli header (Exact real Cowork payload!) -> MUST BE RECOGNIZED AS COWORK
+        let mut headers_real_cowork = HeaderMap::new();
+        headers_real_cowork.insert("x-app", "cli".parse().unwrap());
+        headers_real_cowork.insert("x-claude-code-session-id", "ecb97f89".parse().unwrap());
         let req_local_agent = ClaudeRequest {
             system: Some(SystemPrompt::Array(vec![
                 SystemBlock {
                     block_type: "text".to_string(),
                     text: "x-anthropic-billing-header: cc_version=2.1; cc_entrypoint=local-agent;".to_string(),
                 },
+                SystemBlock {
+                    block_type: "text".to_string(),
+                    text: "<application_details>\nClaude is operating as an agent inside the Claude desktop app.".to_string(),
+                },
             ])),
             ..Default::default()
         };
-        assert!(is_cowork_session(&req_local_agent, &headers_empty));
+        assert!(is_cowork_session(&req_local_agent, &headers_real_cowork));
 
         // 7. Standard external agent request without cowork markers -> MUST NOT be classified as cowork
         let req_standard = ClaudeRequest {
@@ -4281,5 +4287,51 @@ mod warmup_tests {
         COMPACTION_IMMUNITY_LEASES.remove(&session_key);
 
         assert!(!COMPACTION_IMMUNITY_LEASES.contains_key(&session_key));
+    }
+
+    #[test]
+    fn test_real_cowork_session_triggers_gatekeeper() {
+        use axum::http::HeaderMap;
+        use crate::proxy::mappers::claude::models::{SystemBlock, SystemPrompt, Tool};
+
+        // 构造真实 Cowork 请求特征：
+        // 1. 包含 local-agent 运行环境与 desktop_app 标头
+        // 2. 底层运行环境附带 x-app: cli 与 x-claude-code-session-id
+        let mut headers = HeaderMap::new();
+        headers.insert("x-app", "cli".parse().unwrap());
+        headers.insert(
+            "x-claude-code-session-id",
+            "ecb97f89-6972-4d75-a141-3898e86aa82a".parse().unwrap(),
+        );
+        headers.insert("anthropic-client-platform", "desktop_app".parse().unwrap());
+        headers.insert(
+            "user-agent",
+            "claude-cli/2.1.288 (external, local-agent, agent-sdk/0.3.288)"
+                .parse()
+                .unwrap(),
+        );
+
+        let req = ClaudeRequest {
+            system: Some(SystemPrompt::Array(vec![
+                SystemBlock {
+                    block_type: "text".to_string(),
+                    text: "x-anthropic-billing-header: cc_version=2.1.288.ad6; cc_entrypoint=local-agent;".to_string(),
+                },
+                SystemBlock {
+                    block_type: "text".to_string(),
+                    text: "<application_details>\nClaude is operating as an agent inside the Claude desktop app. This agent capability is currently in preview, but fully authorized.".to_string(),
+                },
+            ])),
+            tools: Some(vec![Tool {
+                type_: None,
+                name: Some("mcp__workspace__bash".to_string()),
+                description: None,
+                input_schema: None,
+            }]),
+            ..Default::default()
+        };
+
+        // 必须识别为 Cowork，绝不能被 x-app: cli 误杀！
+        assert!(is_cowork_session(&req, &headers));
     }
 }
