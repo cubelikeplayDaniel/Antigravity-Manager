@@ -253,15 +253,16 @@ pub fn resolve_with_tier(
             } else {
                 None
             };
-            crate::proxy::model_specs::resolve_bare_flash_route(canonical, eff_str)
-                .unwrap_or_else(|| {
+            crate::proxy::model_specs::resolve_bare_flash_route(canonical, eff_str).unwrap_or_else(
+                || {
                     let suffix = match dynamic_tier {
                         VariantTier::High => "high",
                         VariantTier::Low => "low",
                         VariantTier::Medium => "medium",
                     };
                     format!("{}-{}", canonical, suffix)
-                })
+                },
+            )
         } else {
             canonical.to_string()
         };

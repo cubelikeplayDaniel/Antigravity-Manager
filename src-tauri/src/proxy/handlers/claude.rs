@@ -208,18 +208,15 @@ pub fn is_cowork_session(request: &ClaudeRequest, headers: &HeaderMap) -> bool {
     let is_code_mode = request.tools.as_ref().map_or(false, |tools| {
         tools.iter().any(|t| t.get_name().starts_with("mcp__ccd_"))
     }) || headers.iter().any(|(_, v)| {
-        v.to_str().map_or(false, |val| {
-            val.contains("claude-desktop-3p")
-        })
+        v.to_str()
+            .map_or(false, |val| val.contains("claude-desktop-3p"))
     }) || request.system.as_ref().map_or(false, |sys| match sys {
         crate::proxy::mappers::claude::models::SystemPrompt::String(s) => {
             s.contains("claude-desktop-3p") || s.contains("You are Claude Code")
         }
-        crate::proxy::mappers::claude::models::SystemPrompt::Array(arr) => {
-            arr.iter().any(|b| {
-                b.text.contains("claude-desktop-3p") || b.text.contains("You are Claude Code")
-            })
-        }
+        crate::proxy::mappers::claude::models::SystemPrompt::Array(arr) => arr.iter().any(|b| {
+            b.text.contains("claude-desktop-3p") || b.text.contains("You are Claude Code")
+        }),
     });
 
     if is_code_mode {
@@ -236,22 +233,22 @@ pub fn is_cowork_session(request: &ClaudeRequest, headers: &HeaderMap) -> bool {
         })
     });
 
-    let has_cowork_agent = headers.iter().any(|(_, v)| {
-        v.to_str().map_or(false, |val| {
-            val.contains("local-agent")
-        })
-    }) || request.system.as_ref().map_or(false, |sys| match sys {
-        crate::proxy::mappers::claude::models::SystemPrompt::String(s) => {
-            s.contains("local-agent")
-                || s.contains("operating as an agent inside the Claude desktop app")
-        }
-        crate::proxy::mappers::claude::models::SystemPrompt::Array(arr) => {
-            arr.iter().any(|b| {
-                b.text.contains("local-agent")
-                    || b.text.contains("operating as an agent inside the Claude desktop app")
-            })
-        }
-    });
+    let has_cowork_agent = headers
+        .iter()
+        .any(|(_, v)| v.to_str().map_or(false, |val| val.contains("local-agent")))
+        || request.system.as_ref().map_or(false, |sys| match sys {
+            crate::proxy::mappers::claude::models::SystemPrompt::String(s) => {
+                s.contains("local-agent")
+                    || s.contains("operating as an agent inside the Claude desktop app")
+            }
+            crate::proxy::mappers::claude::models::SystemPrompt::Array(arr) => {
+                arr.iter().any(|b| {
+                    b.text.contains("local-agent")
+                        || b.text
+                            .contains("operating as an agent inside the Claude desktop app")
+                })
+            }
+        });
 
     has_cowork_tool || has_cowork_agent
 }
@@ -4132,8 +4129,8 @@ mod warmup_tests {
 
     #[test]
     fn test_is_cowork_session_identifies_cowork_and_excludes_code_mode() {
-        use axum::http::HeaderMap;
         use crate::proxy::mappers::claude::models::{SystemBlock, SystemPrompt, Tool};
+        use axum::http::HeaderMap;
 
         let headers_empty = HeaderMap::new();
 
@@ -4151,12 +4148,12 @@ mod warmup_tests {
 
         // 2. Session with claude-desktop-3p billing header (Claude Code Desktop) -> MUST BE EXCLUDED
         let req_code_billing = ClaudeRequest {
-            system: Some(SystemPrompt::Array(vec![
-                SystemBlock {
-                    block_type: "text".to_string(),
-                    text: "x-anthropic-billing-header: cc_version=2.1; cc_entrypoint=claude-desktop-3p;".to_string(),
-                },
-            ])),
+            system: Some(SystemPrompt::Array(vec![SystemBlock {
+                block_type: "text".to_string(),
+                text:
+                    "x-anthropic-billing-header: cc_version=2.1; cc_entrypoint=claude-desktop-3p;"
+                        .to_string(),
+            }])),
             ..Default::default()
         };
         assert!(!is_cowork_session(&req_code_billing, &headers_empty));
@@ -4245,14 +4242,19 @@ mod warmup_tests {
             ..Default::default()
         };
 
-        let has_compaction_system = req_compaction.system.as_ref().map_or(false, |sys| match sys {
-            crate::proxy::mappers::claude::models::SystemPrompt::String(s) => {
-                crate::proxy::mappers::common_utils::is_compaction_request_text(s)
-            }
-            crate::proxy::mappers::claude::models::SystemPrompt::Array(arr) => arr
-                .iter()
-                .any(|b| crate::proxy::mappers::common_utils::is_compaction_request_text(&b.text)),
-        });
+        let has_compaction_system = req_compaction
+            .system
+            .as_ref()
+            .map_or(false, |sys| match sys {
+                crate::proxy::mappers::claude::models::SystemPrompt::String(s) => {
+                    crate::proxy::mappers::common_utils::is_compaction_request_text(s)
+                }
+                crate::proxy::mappers::claude::models::SystemPrompt::Array(arr) => {
+                    arr.iter().any(|b| {
+                        crate::proxy::mappers::common_utils::is_compaction_request_text(&b.text)
+                    })
+                }
+            });
 
         assert!(has_compaction_system);
     }
@@ -4291,8 +4293,8 @@ mod warmup_tests {
 
     #[test]
     fn test_real_cowork_session_triggers_gatekeeper() {
-        use axum::http::HeaderMap;
         use crate::proxy::mappers::claude::models::{SystemBlock, SystemPrompt, Tool};
+        use axum::http::HeaderMap;
 
         // 构造真实 Cowork 请求特征：
         // 1. 包含 local-agent 运行环境与 desktop_app 标头
