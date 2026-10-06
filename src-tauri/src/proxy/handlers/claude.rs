@@ -197,6 +197,34 @@ fn is_manual_compact_command(request: &ClaudeRequest) -> bool {
     false
 }
 
+/// 判断当前请求是否属于 Claude Desktop Cowork / Code 模式或相关会话
+/// 通过工具前缀（mcp__cowork, mcp__workspace, mcp__ccd_）、请求头（claude-desktop, desktop_app）
+/// 以及 Billing/System prompt 特征全面识别。
+pub fn is_cowork_session(request: &ClaudeRequest, headers: &HeaderMap) -> bool {
+    let has_cowork_tool = request.tools.as_ref().map_or(false, |tools| {
+        tools.iter().any(|t| {
+            let n = t.get_name();
+            n.starts_with("mcp__cowork")
+                || n.starts_with("mcp__workspace")
+                || n.starts_with("mcp__ccd_")
+        })
+    });
+    let has_desktop_header = headers.iter().any(|(_, v)| {
+        v.to_str().map_or(false, |val| {
+            val.contains("claude-desktop") || val.contains("desktop_app")
+        })
+    });
+    let has_desktop_billing = request.system.as_ref().map_or(false, |sys| match sys {
+        crate::proxy::mappers::claude::models::SystemPrompt::String(s) => {
+            s.contains("claude-desktop")
+        }
+        crate::proxy::mappers::claude::models::SystemPrompt::Array(arr) => {
+            arr.iter().any(|b| b.text.contains("claude-desktop"))
+        }
+    });
+    has_cowork_tool || has_desktop_header || has_desktop_billing
+}
+
 /// 计算 Claude 请求中非对话历史的固定开销 (Fixed Overhead: System Prompt + Tool 声明)
 /// 用于动态计算可解的目标上限 (target_limit = max(fixed_overhead + 15000, 35000))
 fn calculate_claude_fixed_overhead(request: &ClaudeRequest) -> u32 {
@@ -1058,14 +1086,13 @@ pub async fn handle_messages(
         crate::proxy::mappers::common_utils::is_compaction_request_text(text)
     });
 
-    let has_compaction_system = request.system.as_ref().map_or(false, |sys| {
-        let sys_text = match sys {
-            crate::proxy::mappers::claude::models::SystemPrompt::String(s) => s.as_str(),
-            crate::proxy::mappers::claude::models::SystemPrompt::Array(arr) => {
-                arr.first().map(|b| b.text.as_str()).unwrap_or("")
-            }
-        };
-        crate::proxy::mappers::common_utils::is_compaction_request_text(sys_text)
+    let has_compaction_system = request.system.as_ref().map_or(false, |sys| match sys {
+        crate::proxy::mappers::claude::models::SystemPrompt::String(s) => {
+            crate::proxy::mappers::common_utils::is_compaction_request_text(s)
+        }
+        crate::proxy::mappers::claude::models::SystemPrompt::Array(arr) => arr
+            .iter()
+            .any(|b| crate::proxy::mappers::common_utils::is_compaction_request_text(&b.text)),
     });
 
     let is_compaction_request =
@@ -1395,12 +1422,7 @@ pub async fn handle_messages(
         && !is_manual_compact
         && !is_in_compaction
     {
-        let is_cowork = request.tools.as_ref().map_or(false, |tools| {
-            tools.iter().any(|t| {
-                let n = t.get_name();
-                n.starts_with("mcp__cowork") || n.starts_with("mcp__workspace")
-            })
-        });
+        let is_cowork = is_cowork_session(&request, &headers);
 
         if is_cowork {
             let fixed_overhead = calculate_claude_fixed_overhead(&request);
@@ -4092,5 +4114,100 @@ mod warmup_tests {
             effective_threshold,
             target_limit
         );
+    }
+
+    #[test]
+    fn test_is_cowork_session_identifies_desktop_and_ccd_tools() {
+        use axum::http::HeaderMap;
+        use crate::proxy::mappers::claude::models::{SystemBlock, SystemPrompt, Tool};
+
+        // 1. Session with mcp__ccd_* tools (Claude Desktop Code tab)
+        let req_ccd = ClaudeRequest {
+            tools: Some(vec![Tool {
+                type_: None,
+                name: Some("mcp__ccd_session__spawn_task".to_string()),
+                description: Some("Spawn background task".to_string()),
+                input_schema: None,
+            }]),
+            ..Default::default()
+        };
+        let headers_empty = HeaderMap::new();
+        assert!(is_cowork_session(&req_ccd, &headers_empty));
+
+        // 2. Session with mcp__cowork_* tools
+        let req_cowork = ClaudeRequest {
+            tools: Some(vec![Tool {
+                type_: None,
+                name: Some("mcp__cowork_file_read".to_string()),
+                description: None,
+                input_schema: None,
+            }]),
+            ..Default::default()
+        };
+        assert!(is_cowork_session(&req_cowork, &headers_empty));
+
+        // 3. Session with desktop platform header
+        let mut headers_desktop = HeaderMap::new();
+        headers_desktop.insert(
+            "anthropic-client-platform",
+            "desktop_app".parse().unwrap(),
+        );
+        let req_plain = ClaudeRequest::default();
+        assert!(is_cowork_session(&req_plain, &headers_desktop));
+
+        // 4. Session with billing header containing claude-desktop
+        let req_billing = ClaudeRequest {
+            system: Some(SystemPrompt::Array(vec![
+                SystemBlock {
+                    block_type: "text".to_string(),
+                    text: "x-anthropic-billing-header: cc_version=2.1; cc_entrypoint=claude-desktop-3p;".to_string(),
+                },
+            ])),
+            ..Default::default()
+        };
+        assert!(is_cowork_session(&req_billing, &headers_empty));
+
+        // 5. Standard external agent request without desktop markers must NOT be classified as cowork
+        let req_standard = ClaudeRequest {
+            tools: Some(vec![Tool {
+                type_: None,
+                name: Some("custom_search_tool".to_string()),
+                description: None,
+                input_schema: None,
+            }]),
+            ..Default::default()
+        };
+        assert!(!is_cowork_session(&req_standard, &headers_empty));
+    }
+
+    #[test]
+    fn test_multi_block_system_prompt_compaction_detection() {
+        use crate::proxy::mappers::claude::models::{SystemBlock, SystemPrompt};
+
+        // Multi-block where block 0 is billing header and block 1 contains compaction text
+        let req_compaction = ClaudeRequest {
+            system: Some(SystemPrompt::Array(vec![
+                SystemBlock {
+                    block_type: "text".to_string(),
+                    text: "x-anthropic-billing-header: cc_version=2.1; cc_entrypoint=claude-desktop-3p;".to_string(),
+                },
+                SystemBlock {
+                    block_type: "text".to_string(),
+                    text: "You are tasked with summarizing conversations: write a concise summary of the conversation so far.".to_string(),
+                },
+            ])),
+            ..Default::default()
+        };
+
+        let has_compaction_system = req_compaction.system.as_ref().map_or(false, |sys| match sys {
+            crate::proxy::mappers::claude::models::SystemPrompt::String(s) => {
+                crate::proxy::mappers::common_utils::is_compaction_request_text(s)
+            }
+            crate::proxy::mappers::claude::models::SystemPrompt::Array(arr) => arr
+                .iter()
+                .any(|b| crate::proxy::mappers::common_utils::is_compaction_request_text(&b.text)),
+        });
+
+        assert!(has_compaction_system);
     }
 }

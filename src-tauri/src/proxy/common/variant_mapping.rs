@@ -254,7 +254,14 @@ pub fn resolve_with_tier(
                 None
             };
             crate::proxy::model_specs::resolve_bare_flash_route(canonical, eff_str)
-                .unwrap_or_else(|| canonical.to_string())
+                .unwrap_or_else(|| {
+                    let suffix = match dynamic_tier {
+                        VariantTier::High => "high",
+                        VariantTier::Low => "low",
+                        VariantTier::Medium => "medium",
+                    };
+                    format!("{}-{}", canonical, suffix)
+                })
         } else {
             canonical.to_string()
         };
@@ -594,9 +601,9 @@ mod tests {
 
     #[test]
     fn test_resolve_37_flash_variants() {
-        // 无后缀的 3.x Flash 裸模型依据思考档位路由（未指定档位默认 High）
+        // 无后缀的 3.x Flash 裸模型依据思考档位路由（未指定档位遵循统一决策链优先选择 tiered）
         let s = resolve("gemini-3.7-flash", None).unwrap();
-        assert_eq!(s.id, "gemini-3.7-flash-high");
+        assert_eq!(s.id, "gemini-3.7-flash-tiered");
         assert_eq!(s.thinking_budget, 10000);
         assert_eq!(s.max_output_tokens, 65536);
 
@@ -627,9 +634,9 @@ mod tests {
 
     #[test]
     fn test_resolve_38_flash_variants() {
-        // 无后缀的 3.x Flash 裸模型依据思考档位路由（未指定档位默认 High）
+        // 无后缀的 3.x Flash 裸模型依据思考档位路由（未指定档位遵循统一决策链优先选择 tiered）
         let s = resolve("gemini-3.8-flash", None).unwrap();
-        assert_eq!(s.id, "gemini-3.8-flash-high");
+        assert_eq!(s.id, "gemini-3.8-flash-tiered");
         assert_eq!(s.thinking_budget, 10000);
         assert_eq!(s.max_output_tokens, 65536);
 
@@ -811,11 +818,11 @@ mod tests {
         assert_eq!(s.id, "gemini-3.1-pro-low");
 
         let s = resolve("gemini-3.1-pro-high", None).unwrap();
-        assert_eq!(s.id, "gemini-3.1-pro-high");
+        assert_eq!(s.id, "gemini-pro-agent");
 
-        // 裸模型解析（缺省遵循决策链 -> high）
+        // 裸模型解析（缺省遵循决策链 -> Medium -> gemini-pro-agent）
         let s = resolve("gemini-3.1-pro", None).unwrap();
-        assert_eq!(s.id, "gemini-3.1-pro-high");
+        assert_eq!(s.id, "gemini-pro-agent");
 
         // 裸模型带显式档位解析
         let s = resolve_with_tier("gemini-3.1-pro", Some(VariantTier::Low), None).unwrap();
