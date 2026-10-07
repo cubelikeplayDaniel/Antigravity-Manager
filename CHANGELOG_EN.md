@@ -3,6 +3,18 @@
 > Complete version history for Antigravity Tools. Return to project home at [README.md](README.md).
 
 *   **Version History**:
+    *   **v4.9.7-beta.1 (2026-10-07)**:
+        -   **[Cowork Auto-Compaction Decoupling, Binary Pruning Trap Bypass & Context Residual Cleanup] (PR #3615, Fixes #3614, Thanks to @cubelikeplayDaniel)**:
+            -   **Precise Cowork vs Code Mode Decoupling**: Removed false-veto rules on generic CLI headers (`x-app: cli`, `x-claude-code-session-id`) and wrapper host headers (`claude-desktop-3p`), resolving missed Cowork compactions in Claude Desktop; tightened Code mode detection strictly to `mcp__ccd_*` tools and `"You are Claude Code"` prompt markers. (Thanks to @cubelikeplayDaniel)
+            -   **Bypass Client Binary Halving Fallback Trap**: Identified the decompiled client `CHt` fallback where large token gaps trigger `Math.floor(n / 2)` (preserving 277 turns / 145.7k tokens); introduced `calculate_cowork_pruning_target` with a calibrated positive gap (+500 tokens) to bypass halving and compel full history summary down to baseline. (Thanks to @cubelikeplayDaniel)
+            -   **Remove Lifetime Continuation Exemption Deadlock**: Eliminated hardcoded `!is_continuation_detected` gate exemption, fixing the issue where a session remained exempt forever once `"This session is being continued..."` was injected, swelling to 320k+. (Thanks to @cubelikeplayDaniel)
+            -   **180s Streaming Timeout Guard**: Extended summary distillation timeouts to 180s to prevent network disconnects during heavy context compression. (Thanks to @cubelikeplayDaniel)
+        -   **[Full-Chain Compaction Signature Stripping, Experimental Global Strip & Tri-Scheme Anti-Resurrection Shield] (PR #3615, Fixes #3614, Thanks to @cubelikeplayDaniel)**:
+            -   **Physical Cache Invalidation on Compaction**: Connected `clear_session_for_compaction` across Claude handler lifecycles to physically flush RAM `ThinkingStore`, SQLite `proxy_db`, and `SignatureCache`, eliminating pre-compaction stale signature leaks. (Thanks to @cubelikeplayDaniel)
+            -   **Protocol-Differentiated Sentinel Isolation**: Compaction history locks Gemini tool calls with official bypass sentinels (`skip_thought_signature_validator`), while strictly stripping signatures for Claude targets (downgrading thoughts to `<think>` text) without inventing sentinels, eliminating 400 validation failures. (Thanks to @cubelikeplayDaniel)
+            -   **New Experimental Toggle for Global Compaction Stripping**: Added `enable_global_compaction_strip` in Thinking Budget settings, default disabled for 100% normal user non-interference; when enabled, applies client-agnostic and protocol-agnostic protection.
+            -   **Tri-Scheme Coordinated Anti-Resurrection Architecture**: Coordinates macro watermark drop detection (purges caches and defines boundary on context collapse), micro folding detection (flags `[Output truncated]`, `[Result omitted]` in-place prunings), and anti-resurrection shields (suppresses `initial_session_sig` and blocks Phase 3/4 fuzzy text matching).
+
     *   **v4.9.7-beta.0 (2026-10-06)**:
         -   **[Align Anthropic SSE Stream Error with Official Standard Type & Restore Client Auto-Retry] (PR #3613, Fixes #3612)**:
             -   **Align SSE Error Event Type**: Aligned the `type` field in SSE streaming error events from internal non-standard `"error_detail"` to the official Anthropic standard `"error"`, ensuring full compliance with the `{"type": "error", "error": {"type": "...", "message": "..."}}` schema. (Thanks to @cubelikeplayDaniel)

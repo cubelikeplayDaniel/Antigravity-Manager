@@ -3,6 +3,18 @@
 > 完整版本历史记录。返回项目主页请查看 [README_ZH.md](README_ZH.md) | [English Changelog](CHANGELOG_EN.md)。
 
 *   **版本演进**:
+    *   **v4.9.7-beta.1 (2026-10-07)**:
+        -   **[Cowork 自动压缩触发与判定解耦、规避二分修剪保底并封堵上下文残留] (PR #3615, Fixes #3614, Thanks to @cubelikeplayDaniel)**:
+            -   **精确解耦 Cowork 与 Code 模式判定**: 消除对通用 CLI 标头（`x-app: cli` / `x-claude-code-session-id`）及第三方宿主外壳标头（`claude-desktop-3p`）的一票否决，彻底解决 Claude Desktop 原生 Cowork 请求被误杀为 Code 模式导致漏拦截的问题；严格收敛 Code 模式判定为 `mcp__ccd_*` 专属工具或 `"You are Claude Code"` 声明。 (Thanks to @cubelikeplayDaniel)
+            -   **规避客户端二分保底与深度压缩调优**: 针对客户端 `CHt` 倒算算法中大 Gap 触发 `Math.floor(n / 2)` 导致保留 277 条历史残留 145.7k tokens 的问题，新增 `calculate_cowork_pruning_target` 抛出微小正向差额（500 tokens），跳过客户端折半保底陷阱，促使客户端将历史轮次深度打包摘要压缩至基线水位。 (Thanks to @cubelikeplayDaniel)
+            -   **移除静态接续标记终身免死租约**: 移除门禁硬编码的 `!is_continuation_detected`，解决 Cowork 会话在首次压缩后因首条消息永久留存 `"This session is being continued..."` 导致后续轮次获得终身免死、暴涨至 320k 均不再被拦截的严重缺陷。 (Thanks to @cubelikeplayDaniel)
+            -   **长流摘要 180s 超时保护**: 为摘要生成请求配置 180s 延长超时保护，防止复杂工程长上下文摘要提炼时因网络波动异常断流。 (Thanks to @cubelikeplayDaniel)
+        -   **[压缩全链路签名治理、试验性全局压缩剥离与三案联动防复活机制] (PR #3615, Fixes #3614, Thanks to @cubelikeplayDaniel)**:
+            -   **全链路物理清库调用与生命周期回收**: 在 Claude 消息流生命周期与摘要生成处补齐 `clear_session_for_compaction` 物理调用，确保会话压缩时 RAM `ThinkingStore`、SQLite `proxy_db` 与 `SignatureCache` 真正被级联清空，杜绝失效旧签名穿透残留。 (Thanks to @cubelikeplayDaniel)
+            -   **协议差异化出站哨兵隔离**: 针对压缩历史轮次，Gemini 缺失签名的工具调用统一以官方哨兵 `skip_thought_signature_validator` 锁定防止 400 校验报错；Claude 目标彻底剥离签名（思考正文降级为 `<think>` 纯文本出站），严禁向 Claude 发明 Gemini 哨兵，保证多模型全协议兼容。 (Thanks to @cubelikeplayDaniel)
+            -   **新增「全局压缩剥离签名」试验性开关**: 在思维预算设置中新增 `enable_global_compaction_strip` 开关，默认保持关闭（100% 保持既有行为与普通用户零干扰）；开启后全局生效，扩展为协议无关、客户端无关的通用压缩防护。
+            -   **三案联动防复活架构**: 开启后联动执行宏观高水位线检测（字符量/轮次断崖暴跌时物理清库并划定治理边界）、微观就地折叠检测（识别 `[Output truncated]`、`[Result omitted]` 等定向隔离受污染历史）与防复活屏障（在 `finalize` 中彻底压制 `initial_session_sig` 回填，并在 `restore` 中先划定边界再加载记录，杜绝 Phase 3/4 模糊前缀匹配复活）。
+
     *   **v4.9.7-beta.0 (2026-10-06)**:
         -   **[对齐 Anthropic SSE 流错误官方标准类型并恢复客户端自动重试] (PR #3613, Fixes #3612)**:
             -   **标准错误事件类型对齐**: 将 SSE 流式错误事件中的 `type` 字段从内部非标准的 `"error_detail"` 对齐为 Anthropic 官方规范的 `"error"`，使 `{"type": "error", "error": {"type": "...", "message": "..."}}` 结构完全合规。 (Thanks to @cubelikeplayDaniel)
