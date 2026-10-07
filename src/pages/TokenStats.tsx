@@ -31,6 +31,7 @@ import {
     BarChart3,
     Sparkles,
 } from 'lucide-react';
+import { motion } from 'framer-motion';
 import { ActivityHeatmapCard, DayUsagePoint } from '../components/token_stats/ActivityHeatmapCard';
 import { HourlyTrendBarCard, HourlyUsagePoint } from '../components/token_stats/HourlyTrendBarCard';
 import { TopModelsShareCard, ModelShareItem } from '../components/token_stats/TopModelsShareCard';
@@ -509,7 +510,13 @@ const TokenStats: React.FC = () => {
 
     return (
         <div className="h-full w-full overflow-y-auto bg-gray-50/50 dark:bg-[#0a0a0c] text-gray-800 dark:text-white/90">
-            <div className="p-4 sm:p-6 space-y-5 max-w-7xl mx-auto">
+            <motion.div
+                initial={{ opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
+                style={{ willChange: 'opacity, transform' }}
+                className="p-4 sm:p-6 space-y-5 max-w-7xl mx-auto"
+            >
                 {/* 顶部标题与多功能工具栏 */}
                 <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
                     <div className="flex items-center gap-3">
@@ -840,6 +847,7 @@ const TokenStats: React.FC = () => {
                                                                 fill={TOP_COLORS[index % TOP_COLORS.length]}
                                                                 radius={isTop ? [3, 3, 0, 0] : [0, 0, 0, 0]}
                                                                 maxBarSize={30}
+                                                                isAnimationActive={false}
                                                             />
                                                         );
                                                     })}
@@ -892,6 +900,7 @@ const TokenStats: React.FC = () => {
                                                             stroke={TOP_COLORS[index % TOP_COLORS.length]}
                                                             strokeWidth={1.5}
                                                             fill={`url(#color-${index})`}
+                                                            isAnimationActive={false}
                                                         />
                                                     ))}
                                                 </AreaChart>
@@ -1123,6 +1132,7 @@ const TokenStats: React.FC = () => {
                                                             fill={TOP_COLORS[index % TOP_COLORS.length]}
                                                             radius={isTop ? [3, 3, 0, 0] : [0, 0, 0, 0]}
                                                             maxBarSize={30}
+                                                            isAnimationActive={false}
                                                         />
                                                     );
                                                 })}
@@ -1175,6 +1185,7 @@ const TokenStats: React.FC = () => {
                                                         stroke={TOP_COLORS[index % TOP_COLORS.length]}
                                                         strokeWidth={1.5}
                                                         fill={`url(#color-classic-${index})`}
+                                                        isAnimationActive={false}
                                                     />
                                                 ))}
                                             </AreaChart>
@@ -1468,7 +1479,7 @@ const TokenStats: React.FC = () => {
                         setShowPricingModal(false);
                     }}
                 />
-            </div>
+            </motion.div>
         </div>
     );
 };
