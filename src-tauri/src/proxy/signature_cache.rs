@@ -471,6 +471,29 @@ impl SignatureCache {
         }
     }
 
+    /// 彻底作废特定会话的全部签名缓存（包括 session_signatures, session_reasonings, tool_signatures 及 SQLite 持久化）
+    pub fn invalidate_session(&self, session_id: &str) {
+        let session_id = session_id.trim();
+        if session_id.is_empty() {
+            return;
+        }
+        let suffix = format!(":{}", session_id);
+        if let Ok(mut cache) = self.session_signatures.lock() {
+            cache.retain(|k, _| k != session_id && !k.ends_with(&suffix));
+        }
+        if let Ok(mut cache) = self.session_reasonings.lock() {
+            cache.retain(|k, _| k != session_id && !k.ends_with(&suffix));
+        }
+        let scoped_prefix = format!("{session_id}\u{1f}");
+        let scoped_suffix_prefix = format!(":{session_id}\u{1f}");
+        if let Ok(mut cache) = self.tool_signatures.lock() {
+            cache.retain(|k, _| {
+                !k.starts_with(&scoped_prefix) && !k.contains(&scoped_suffix_prefix)
+            });
+        }
+        let _ = crate::modules::proxy_db::delete_tool_signatures_for_session(session_id);
+    }
+
     /// Clear all caches (for testing or manual reset)
     #[allow(dead_code)] // Used in tests
     pub fn clear(&self) {
@@ -525,7 +548,7 @@ mod tests {
         let cache = SignatureCache::new();
         let sig1 = "a".repeat(60);
         let sig2 = "b".repeat(80); // Longer, should replace
-        let sig3 = "c".repeat(40); // Too short, should be ignored
+        let sig3 = "c".repeat(20); // Too short (< 32), should be ignored
 
         // Initially empty
         assert!(cache.get_session_signature("sid-test123").is_none());
@@ -634,5 +657,57 @@ mod tests {
             Some(sig2.clone())
         );
         assert_eq!(cache.get_tool_signature("scope", "call888888"), Some(sig2));
+    }
+
+    #[test]
+    fn test_invalidate_session() {
+        let cache = SignatureCache::new();
+        let sig = "s".repeat(60);
+
+        // 1. 设置 sess-1 (带和不带租户前缀) 以及 sess-2
+        cache.cache_tool_signature("sess-1", "tool_a", sig.clone());
+        cache.cache_tool_signature("tenant:sess-1", "tool_b", sig.clone());
+        cache.cache_tool_signature("sess-2", "tool_c", sig.clone());
+
+        cache.cache_session_signature("sess-1", sig.clone(), 1);
+        cache.cache_session_signature("tenant:sess-1", sig.clone(), 1);
+        cache.cache_session_signature("sess-2", sig.clone(), 1);
+
+        cache.cache_session_reasoning("sess-1", "reasoning 1".to_string(), 0);
+        cache.cache_session_reasoning("tenant:sess-1", "reasoning tenant 1".to_string(), 0);
+        cache.cache_session_reasoning("sess-2", "reasoning 2".to_string(), 0);
+
+        // 验证已写入
+        assert!(cache.get_tool_signature("sess-1", "tool_a").is_some());
+        assert!(cache
+            .get_tool_signature("tenant:sess-1", "tool_b")
+            .is_some());
+        assert!(cache.get_tool_signature("sess-2", "tool_c").is_some());
+
+        assert!(cache.get_session_signature("sess-1").is_some());
+        assert!(cache.get_session_signature("tenant:sess-1").is_some());
+        assert!(cache.get_session_signature("sess-2").is_some());
+
+        assert!(cache.get_session_reasoning("sess-1", 0).is_some());
+        assert!(cache.get_session_reasoning("tenant:sess-1", 0).is_some());
+        assert!(cache.get_session_reasoning("sess-2", 0).is_some());
+
+        // 2. 清理 sess-1
+        cache.invalidate_session("sess-1");
+
+        // 3. 验证 sess-1 及其租户变体全被清除，但 sess-2 保持完好
+        assert!(cache.get_tool_signature("sess-1", "tool_a").is_none());
+        assert!(cache
+            .get_tool_signature("tenant:sess-1", "tool_b")
+            .is_none());
+        assert!(cache.get_tool_signature("sess-2", "tool_c").is_some());
+
+        assert!(cache.get_session_signature("sess-1").is_none());
+        assert!(cache.get_session_signature("tenant:sess-1").is_none());
+        assert!(cache.get_session_signature("sess-2").is_some());
+
+        assert!(cache.get_session_reasoning("sess-1", 0).is_none());
+        assert!(cache.get_session_reasoning("tenant:sess-1", 0).is_none());
+        assert!(cache.get_session_reasoning("sess-2", 0).is_some());
     }
 }

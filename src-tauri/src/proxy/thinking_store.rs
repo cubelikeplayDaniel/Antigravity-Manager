@@ -322,8 +322,13 @@ impl ThinkingStore {
             return;
         }
 
+        let compaction_boundary = find_compaction_continuation_boundary(contents);
+
         let mut incoming: Vec<ThinkingRecord> = Vec::new();
         for (c_idx, content) in contents.iter().enumerate() {
+            if compaction_boundary.map_or(false, |b| c_idx <= b) {
+                continue;
+            }
             let role = content.get("role").and_then(|v| v.as_str()).unwrap_or("");
             if role != "model" && role != "assistant" {
                 continue;
@@ -435,10 +440,15 @@ impl ThinkingStore {
             already_complete: bool,
         }
 
+        let compaction_boundary = find_compaction_continuation_boundary(contents);
         let mut model_turns: Vec<ModelTurnMeta> = Vec::new();
         for (c_idx, content) in contents.iter().enumerate() {
             let role = content.get("role").and_then(|v| v.as_str()).unwrap_or("");
             if role != "model" && role != "assistant" {
+                continue;
+            }
+            if compaction_boundary.map_or(false, |b| c_idx <= b) {
+                // 压缩历史中的 model 轮次绝不从旧缓存中反向复活已失效的旧签名或旧思考
                 continue;
             }
             let Some(parts) = content.get("parts").and_then(|p| p.as_array()) else {
@@ -967,6 +977,24 @@ impl ThinkingStore {
         }
     }
 
+    /// 彻底清理指定会话的全部预压缩历史数据与签名缓存 (RAM sessions + SQLite L2 + SignatureCache)
+    /// 当检测到会话发生上下文压缩提纯 (Reactive Compaction) 时调用，彻底杜绝失效旧签名穿透或二次膨胀
+    pub fn clear_session_for_compaction(&self, store_key: &str) {
+        let clean_key = store_key.trim();
+        if clean_key.is_empty() {
+            return;
+        }
+        let suffix = format!(":{}", clean_key);
+        self.sessions
+            .retain(|k, _| k != clean_key && !k.ends_with(&suffix));
+        let _ = crate::modules::proxy_db::delete_thinking_records_for_session(clean_key);
+        crate::proxy::SignatureCache::global().invalidate_session(clean_key);
+        tracing::info!(
+            "[ThinkingStore] Cleared session {} for compaction",
+            clean_key
+        );
+    }
+
     /// 精准定向净化指定会话中的异构污染签名（保留思考文本与健康签名）
     pub fn purge_corrupted_signatures(&self, store_key: &str, target_model: &str) -> usize {
         if store_key.is_empty() {
@@ -1481,6 +1509,30 @@ pub fn capture_gemini_response_with_preceding(
     }
 }
 
+/// 快速检索 contents 数组中包含 post-compaction continuation 接续标记的轮次索引
+/// 当会话在客户端成功生成 compact_boundary 或注入历史摘要后，该轮及其之前的历史属于压缩上下文。
+pub fn find_compaction_continuation_boundary(contents: &[Value]) -> Option<usize> {
+    for (idx, content) in contents.iter().enumerate() {
+        if let Some(parts) = content.get("parts").and_then(Value::as_array) {
+            for part in parts {
+                if let Some(text) = part.get("text").and_then(Value::as_str) {
+                    if crate::proxy::mappers::common_utils::is_post_compaction_continuation_text(
+                        text,
+                    ) {
+                        return Some(idx);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 模块级便捷接口：彻底清理指定会话的全部预压缩历史数据与签名缓存
+pub fn clear_session_for_compaction(store_key: &str) {
+    ThinkingStore::global().clear_session_for_compaction(store_key);
+}
+
 /// 四大协议统一思考补齐管线：确保所有 Gemini contents 中的 model 轮次在开启思考时，必须具备合法的思考块与签名
 pub fn finalize_gemini_contents_thinking(contents: &mut [Value], is_thinking_enabled: bool) {
     finalize_gemini_contents_thinking_with_model(contents, is_thinking_enabled, None);
@@ -1505,6 +1557,8 @@ pub fn finalize_gemini_contents_thinking_with_session(
     target_model: Option<&str>,
     session_id: Option<&str>,
 ) {
+    let compaction_boundary = find_compaction_continuation_boundary(contents);
+
     // 预先计算每一轮的前置因果锚点 (causal anchor)，以便无 ID 的 Gemini 原生工具调用也能合成确定性 ID
     let anchors: Vec<String> = (0..contents.len())
         .map(|i| {
@@ -1539,6 +1593,7 @@ pub fn finalize_gemini_contents_thinking_with_session(
     });
 
     for (msg_idx, msg) in contents.iter_mut().enumerate() {
+        let is_in_compaction_history = compaction_boundary.map_or(false, |b| msg_idx <= b);
         let _anchor = &anchors[msg_idx];
         let has_fc = msg
             .get("parts")
@@ -1560,7 +1615,7 @@ pub fn finalize_gemini_contents_thinking_with_session(
                 for part in parts.iter_mut() {
                     if let Some(obj) = part.as_object_mut() {
                         obj.remove("thought_signature");
-                        if obj.contains_key("functionResponse") {
+                        if is_in_compaction_history || obj.contains_key("functionResponse") {
                             obj.remove("thoughtSignature");
                         }
                     }
@@ -1686,7 +1741,21 @@ pub fn finalize_gemini_contents_thinking_with_session(
 
             // 2. 签名归位（终审出站门禁 Gatekeeper）：
             // 签名只写在该轮第一个非思考 part 上。Gemini 与 Claude 桌面端都是这个落点。
-            if other_parts.is_empty() {
+            if is_in_compaction_history {
+                // 压缩历史轮次治理：
+                // 彻底剥离历史失效签名，缺失签名的工具调用统一以官方哨兵锁定（防 400），
+                // 伴随正文/思考块绝对不携带任何签名
+                for p in other_parts.iter_mut() {
+                    if let Some(obj) = p.as_object_mut() {
+                        obj.remove("thought_signature");
+                        if obj.contains_key("functionCall") {
+                            obj.insert("thoughtSignature".to_string(), json!(SENTINEL_SIGNATURE));
+                        } else {
+                            obj.remove("thoughtSignature");
+                        }
+                    }
+                }
+            } else if other_parts.is_empty() {
                 // 黄金法则 2.2：纯思考轮（无正文、无工具调用）
                 // 思考块绝不挂载签名。若本轮持有有效签名，先暂存在手上 (pending_thought_sig) 预留给后续轮次
                 let turn_sig = thinking_parts.iter().find_map(|tp| {
@@ -2899,7 +2968,7 @@ pub fn fingerprint(visible: &str, tool_ids: &[String], tool_names: &[String]) ->
 mod tests {
     use super::*;
 
-    fn rec(thought: &str, visible: &str, tool_id: Option<&str>) -> ThinkingRecord {
+    pub(super) fn rec(thought: &str, visible: &str, tool_id: Option<&str>) -> ThinkingRecord {
         let tool_ids = tool_id.map(|id| vec![id.to_string()]).unwrap_or_default();
         let tool_names = if tool_id.is_some() {
             vec!["shell".to_string()]
@@ -4857,6 +4926,7 @@ mod tests {
 ///   4. 缺失签名被上游容忍，绝不发明哨兵。
 #[cfg(test)]
 mod signature_placement_tests {
+    use super::tests::rec;
     use super::*;
 
     /// 构造符合 Google 原生特征的假签名（Base64 解码后首字节 = protobuf tag 0x12）
@@ -5082,7 +5152,7 @@ mod signature_placement_tests {
         assert_eq!(gemini_extracted.as_deref(), Some(fc_sig.as_str()));
 
         // 2. Claude (prefer_function_call = false) -> 提取首个非思考部件的签名 text_sig
-        let claude_sig_str = "AQ".to_string() + &"A".repeat(50);
+        let claude_sig_str = "CAQSpAN01LkwMTAnAAEq".to_string();
         let claude_parts = vec![
             json!({ "text": "Analyzing...", "thoughtSignature": claude_sig_str }),
             json!({ "functionCall": { "id": "call_test", "name": "read" } }),
@@ -5398,5 +5468,161 @@ mod signature_placement_tests {
             })
             .unwrap();
         assert!(fc2.get("thoughtSignature").is_none());
+    }
+
+    #[test]
+    fn test_clear_session_for_compaction_and_continuation_boundary() {
+        let store = ThinkingStore::global();
+        let sid = "sess_compaction_cleanup_test";
+
+        // 1. 存入模拟思考数据
+        store.record(
+            sid,
+            rec("compaction thought", "compaction text", Some("call_old_1")),
+        );
+        crate::proxy::SignatureCache::global().cache_tool_signature(
+            sid,
+            "call_old_1",
+            "sig_old_protobuf_signature_for_test_1234567890".to_string(),
+        );
+        crate::proxy::SignatureCache::global().cache_session_signature(
+            sid,
+            "sig_old_session_signature_1234567890abcdef".to_string(),
+            1,
+        );
+
+        assert!(store.session_stats(sid).is_some());
+
+        // 2. 彻底作废该会话的预压缩历史签名
+        clear_session_for_compaction(sid);
+
+        // 3. 验证内存与缓存均已清空
+        assert!(store.session_stats(sid).is_none());
+        assert!(crate::proxy::SignatureCache::global()
+            .get_tool_signature(sid, "call_old_1")
+            .is_none());
+        assert!(crate::proxy::SignatureCache::global()
+            .get_session_signature(sid)
+            .is_none());
+    }
+
+    #[test]
+    fn test_find_compaction_continuation_boundary() {
+        let regular_contents = vec![
+            json!({
+                "role": "user",
+                "parts": [{ "text": "hello" }]
+            }),
+            json!({
+                "role": "model",
+                "parts": [{ "text": "hi there" }]
+            }),
+        ];
+        assert_eq!(
+            find_compaction_continuation_boundary(&regular_contents),
+            None
+        );
+
+        let compacted_contents = vec![
+            json!({
+                "role": "user",
+                "parts": [{ "text": "Initial setup instruction" }]
+            }),
+            json!({
+                "role": "user",
+                "parts": [{ "text": "This session is being continued from a previous conversation that ran out of context." }]
+            }),
+            json!({
+                "role": "user",
+                "parts": [{ "text": "Please continue with task" }]
+            }),
+        ];
+        assert_eq!(
+            find_compaction_continuation_boundary(&compacted_contents),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn test_compaction_continuation_signature_phasing_and_sentinel_locking() {
+        let old_sig = "sig_old_gemini_protobuf_signature_test_1234567890";
+        let fresh_sig = "sig_fresh_google_protobuf_signature_after_compaction";
+        let session_id = "sess_compaction_phasing_test";
+
+        // 第一阶段：压缩后的上下文第一次输入
+        // 历史轮次（包含工具调用）带有失效的旧签名，紧随接续提示词
+        let mut first_input_contents = vec![
+            json!({
+                "role": "model",
+                "parts": [
+                    { "text": "Running old tool..." },
+                    {
+                        "functionCall": { "id": "call_old_fc", "name": "shell", "args": {} },
+                        "thoughtSignature": old_sig
+                    }
+                ]
+            }),
+            json!({
+                "role": "user",
+                "parts": [{ "text": "This session is being continued from a previous conversation that ran out of context." }]
+            }),
+            json!({
+                "role": "user",
+                "parts": [{ "text": "Continue next step" }]
+            }),
+        ];
+
+        // 第一次输入前执行预压缩签名清理
+        clear_session_for_compaction(session_id);
+
+        finalize_gemini_contents_thinking_with_session(
+            &mut first_input_contents,
+            true,
+            Some("gemini-2.5-flash"),
+            Some(session_id),
+        );
+
+        // 验证：第一次输入历史轮次的所有旧签名被剥离，工具缺失处用哨兵锁死补齐
+        let fc0 = &first_input_contents[0]["parts"][1];
+        assert_eq!(fc0["thoughtSignature"], SENTINEL_SIGNATURE);
+        // 验证正文部件没有挂载任何签名
+        assert!(first_input_contents[0]["parts"][0]
+            .get("thoughtSignature")
+            .is_none());
+
+        // 第二阶段：上游 Google 返回新签名后，下次请求携带新轮次进入
+        // 轮次 0：历史工具（<= boundary_idx，必须维持哨兵）
+        // 轮次 1：接续提示词（= boundary_idx）
+        // 轮次 2：用户指令
+        // 轮次 3：Google 返回的新模型响应（> boundary_idx，装配新签名）
+        let mut second_input_contents = vec![
+            first_input_contents[0].clone(),
+            first_input_contents[1].clone(),
+            first_input_contents[2].clone(),
+            json!({
+                "role": "model",
+                "parts": [
+                    { "text": "Executing new step..." },
+                    {
+                        "functionCall": { "id": "call_new_fc", "name": "edit", "args": {} },
+                        "thoughtSignature": fresh_sig
+                    }
+                ]
+            }),
+        ];
+
+        finalize_gemini_contents_thinking_with_session(
+            &mut second_input_contents,
+            true,
+            Some("gemini-2.5-flash"),
+            Some(session_id),
+        );
+
+        // 验证：前面的历史轮次依然保持哨兵，新轮次装配 Google 动态新签名！
+        let fc_history = &second_input_contents[0]["parts"][1];
+        assert_eq!(fc_history["thoughtSignature"], SENTINEL_SIGNATURE);
+
+        let fc_new = &second_input_contents[3]["parts"][1];
+        assert_eq!(fc_new["thoughtSignature"], fresh_sig);
     }
 }

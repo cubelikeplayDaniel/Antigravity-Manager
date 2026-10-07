@@ -1256,15 +1256,35 @@ pub fn delete_thinking_records_except_fingerprints(
     .map_err(|e| e.to_string())
 }
 
+pub fn delete_tool_signatures_for_session(session_key: &str) -> Result<usize, String> {
+    let clean_key = session_key.trim();
+    if clean_key.is_empty() {
+        return Ok(0);
+    }
+    let conn = connect_db()?;
+    let p1 = format!("{clean_key}\u{1f}%");
+    let p2 = format!("%:{clean_key}\u{1f}%");
+    conn.execute(
+        "DELETE FROM tool_signatures WHERE tool_id LIKE ?1 OR tool_id LIKE ?2",
+        params![p1, p2],
+    )
+    .map_err(|e| e.to_string())
+}
+
 pub fn delete_thinking_records_for_session(session_key: &str) -> Result<usize, String> {
+    let clean = session_key.trim();
+    if clean.is_empty() {
+        return Ok(0);
+    }
     let conn = thinking_db()?;
+    let suffix = format!("%:{}", clean);
     let _ = conn.execute(
-        "DELETE FROM thinking_sessions WHERE session_key = ?1",
-        params![session_key],
+        "DELETE FROM thinking_sessions WHERE session_key = ?1 OR session_key LIKE ?2",
+        params![clean, suffix],
     );
     conn.execute(
-        "DELETE FROM thinking_records WHERE session_key = ?1",
-        params![session_key],
+        "DELETE FROM thinking_records WHERE session_key = ?1 OR session_key LIKE ?2",
+        params![clean, suffix],
     )
     .map_err(|e| e.to_string())
 }
@@ -2215,6 +2235,92 @@ mod thinking_sqlite_tests {
             )
             .unwrap();
         assert_eq!(sig_in_db, expected_base64);
+    }
+
+    #[test]
+    fn test_delete_session_signatures_and_thinking_records_multi_tenant() {
+        let _dir = TestDataDir::new();
+        init_db().unwrap();
+
+        let sig = "EiYKJGUyNDgzMGE3LTVjZDYtNDJmZS05OThiLWVlNTM5ZTcyYjljMw==";
+
+        // 1. 准备多租户会话的思考记录
+        save_thinking_record(
+            "tenant_a:sess-compact",
+            "fp_1",
+            "thought 1",
+            Some(sig),
+            &[],
+            &[],
+            "vis 1",
+        )
+        .unwrap();
+        save_thinking_record(
+            "sess-compact",
+            "fp_2",
+            "thought 2",
+            Some(sig),
+            &[],
+            &[],
+            "vis 2",
+        )
+        .unwrap();
+        save_thinking_record(
+            "tenant_b:sess-other",
+            "fp_3",
+            "thought 3",
+            Some(sig),
+            &[],
+            &[],
+            "vis 3",
+        )
+        .unwrap();
+
+        assert_eq!(
+            load_thinking_records("tenant_a:sess-compact")
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(load_thinking_records("sess-compact").unwrap().len(), 1);
+        assert_eq!(
+            load_thinking_records("tenant_b:sess-other").unwrap().len(),
+            1
+        );
+
+        // 2. 准备会话作用域 tool_signatures
+        let scoped_key1 = format!("sess-compact\u{1f}call_1");
+        let scoped_key2 = format!("tenant_a:sess-compact\u{1f}call_2");
+        let scoped_key3 = format!("sess-other\u{1f}call_3");
+        save_tool_signature(&scoped_key1, sig).unwrap();
+        save_tool_signature(&scoped_key2, sig).unwrap();
+        save_tool_signature(&scoped_key3, sig).unwrap();
+
+        assert!(load_tool_signature(&scoped_key1).unwrap().is_some());
+        assert!(load_tool_signature(&scoped_key2).unwrap().is_some());
+        assert!(load_tool_signature(&scoped_key3).unwrap().is_some());
+
+        // 3. 执行 delete_tool_signatures_for_session("sess-compact")
+        let deleted_tools = delete_tool_signatures_for_session("sess-compact").unwrap();
+        assert_eq!(deleted_tools, 2);
+        assert!(load_tool_signature(&scoped_key1).unwrap().is_none());
+        assert!(load_tool_signature(&scoped_key2).unwrap().is_none());
+        assert!(load_tool_signature(&scoped_key3).unwrap().is_some());
+
+        // 4. 执行 delete_thinking_records_for_session("sess-compact") 支持租户前缀匹配
+        let deleted_records = delete_thinking_records_for_session("sess-compact").unwrap();
+        assert_eq!(deleted_records, 2);
+        assert_eq!(
+            load_thinking_records("tenant_a:sess-compact")
+                .unwrap()
+                .len(),
+            0
+        );
+        assert_eq!(load_thinking_records("sess-compact").unwrap().len(), 0);
+        assert_eq!(
+            load_thinking_records("tenant_b:sess-other").unwrap().len(),
+            1
+        );
     }
 }
 
