@@ -148,6 +148,7 @@ export interface ExperimentalConfig {
     enable_cowork_auto_compact?: boolean;
     cowork_compact_threshold?: number;
     enable_cowork_manual_compact?: boolean;
+    enable_global_compaction_strip?: boolean;
 }
 
 export interface CircuitBreakerConfig {

@@ -2032,6 +2032,10 @@ print(response.choices[0].message.content)`;
                                         onThinkingRetentionDaysChange={(days: number) =>
                                             updateExperimentalConfig({ thinking_retention_days: days })
                                         }
+                                        globalCompactionStripEnabled={appConfig.proxy.experimental?.enable_global_compaction_strip === true}
+                                        onGlobalCompactionStripChange={(enabled) =>
+                                            updateExperimentalConfig({ enable_global_compaction_strip: enabled })
+                                        }
                                     />
                                 </CollapsibleCard>
 

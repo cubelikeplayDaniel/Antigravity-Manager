@@ -251,6 +251,7 @@ pub async fn ensure_admin_server(
         config.experimental.thinking_store_enabled,
         config.experimental.thinking_retention_days,
         Some(config.experimental.thinking_max_memory_turns),
+        Some(config.experimental.enable_global_compaction_strip),
     );
 
     // Ensure monitor exists
@@ -316,6 +317,7 @@ pub async fn ensure_admin_server(
         config.experimental.thinking_store_enabled,
         config.experimental.thinking_retention_days,
         Some(config.experimental.thinking_max_memory_turns),
+        Some(config.experimental.enable_global_compaction_strip),
     );
 
     Ok(())

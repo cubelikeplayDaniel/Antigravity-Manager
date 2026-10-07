@@ -110,14 +110,25 @@ impl SessionEntry {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct SessionWatermark {
+    pub chars: usize,
+    pub turns: usize,
+    pub last_seen: Instant,
+}
+
 pub struct ThinkingStore {
     sessions: DashMap<String, SessionEntry>,
+    watermarks: DashMap<String, SessionWatermark>,
+    compaction_events: DashMap<String, (usize, Instant)>,
 }
 
 impl ThinkingStore {
     fn new() -> Self {
         Self {
             sessions: DashMap::new(),
+            watermarks: DashMap::new(),
+            compaction_events: DashMap::new(),
         }
     }
 
@@ -132,6 +143,10 @@ impl ThinkingStore {
         }
         self.sessions
             .retain(|_, e| e.last_access.elapsed() < idle_ttl());
+        self.watermarks
+            .retain(|_, w| w.last_seen.elapsed() < idle_ttl());
+        self.compaction_events
+            .retain(|_, (_, t)| t.elapsed() < Duration::from_secs(60));
         if self.sessions.len() <= MAX_SESSIONS {
             return;
         }
@@ -322,7 +337,7 @@ impl ThinkingStore {
             return;
         }
 
-        let compaction_boundary = find_compaction_continuation_boundary(contents);
+        let compaction_boundary = determine_compaction_boundary(contents, Some(store_key));
 
         let mut incoming: Vec<ThinkingRecord> = Vec::new();
         for (c_idx, content) in contents.iter().enumerate() {
@@ -423,6 +438,7 @@ impl ThinkingStore {
             return 0;
         }
 
+        let compaction_boundary = determine_compaction_boundary(contents, Some(store_key));
         let mut records = self.load_turns(store_key);
 
         // 收集所有的 model 轮次元信息
@@ -440,7 +456,6 @@ impl ThinkingStore {
             already_complete: bool,
         }
 
-        let compaction_boundary = find_compaction_continuation_boundary(contents);
         let mut model_turns: Vec<ModelTurnMeta> = Vec::new();
         for (c_idx, content) in contents.iter().enumerate() {
             let role = content.get("role").and_then(|v| v.as_str()).unwrap_or("");
@@ -995,6 +1010,58 @@ impl ThinkingStore {
         );
     }
 
+    /// 检查并维护会话高水位线。若发生宏观上下文骤降（轮数骤减或总字符量骤减），返回 true
+    pub fn check_macro_context_drop(
+        &self,
+        session_id: &str,
+        cur_chars: usize,
+        cur_turns: usize,
+    ) -> bool {
+        let clean_key = session_id.trim();
+        if clean_key.is_empty() {
+            return false;
+        }
+
+        if let Some(mut entry) = self.watermarks.get_mut(clean_key) {
+            let prev_chars = entry.chars;
+            let prev_turns = entry.turns;
+            // 宏观骤降门禁：
+            // 历史轮次至少达到 4 轮且轮数骤降 >= 2，或累积字符数达到 4000 字符以上且字符骤降 > 35%
+            let turns_dropped = prev_turns >= 4 && cur_turns.saturating_add(2) <= prev_turns;
+            let chars_dropped = prev_chars >= 4000 && cur_chars < (prev_chars * 65 / 100);
+
+            if turns_dropped || chars_dropped {
+                tracing::info!(
+                    "[ThinkingStore] Macro context drop detected for session {}: turns {} -> {}, chars {} -> {}",
+                    clean_key, prev_turns, cur_turns, prev_chars, cur_chars
+                );
+                entry.chars = cur_chars;
+                entry.turns = cur_turns;
+                entry.last_seen = Instant::now();
+                return true;
+            } else {
+                if cur_chars > entry.chars {
+                    entry.chars = cur_chars;
+                }
+                if cur_turns > entry.turns {
+                    entry.turns = cur_turns;
+                }
+                entry.last_seen = Instant::now();
+            }
+        } else {
+            self.watermarks.insert(
+                clean_key.to_string(),
+                SessionWatermark {
+                    chars: cur_chars,
+                    turns: cur_turns,
+                    last_seen: Instant::now(),
+                },
+            );
+        }
+
+        false
+    }
+
     /// 精准定向净化指定会话中的异构污染签名（保留思考文本与健康签名）
     pub fn purge_corrupted_signatures(&self, store_key: &str, target_model: &str) -> usize {
         if store_key.is_empty() {
@@ -1528,6 +1595,160 @@ pub fn find_compaction_continuation_boundary(contents: &[Value]) -> Option<usize
     None
 }
 
+/// 计算 contents 的字符量与总轮数，供全协议宏观水位线检测
+pub fn calculate_contents_metrics(contents: &[Value]) -> (usize, usize) {
+    let mut total_chars = 0usize;
+    for content in contents {
+        if let Some(parts) = content.get("parts").and_then(Value::as_array) {
+            for part in parts {
+                if let Some(text) = part.get("text").and_then(Value::as_str) {
+                    total_chars = total_chars.saturating_add(text.len());
+                }
+                if let Some(thought) = part.get("thought").and_then(Value::as_str) {
+                    total_chars = total_chars.saturating_add(thought.len());
+                }
+                if let Some(fc) = part.get("functionCall") {
+                    if let Some(name) = fc.get("name").and_then(Value::as_str) {
+                        total_chars = total_chars.saturating_add(name.len());
+                    }
+                    if let Some(args) = fc.get("args") {
+                        if let Some(s) = args.as_str() {
+                            total_chars = total_chars.saturating_add(s.len());
+                        } else {
+                            total_chars = total_chars.saturating_add(args.to_string().len());
+                        }
+                    }
+                }
+                if let Some(fr) = part.get("functionResponse") {
+                    if let Some(resp) = fr.get("response") {
+                        if let Some(s) = resp.as_str() {
+                            total_chars = total_chars.saturating_add(s.len());
+                        } else {
+                            total_chars = total_chars.saturating_add(resp.to_string().len());
+                        }
+                    }
+                }
+                if let Some(id) = part.get("inlineData") {
+                    if let Some(data) = id.get("data").and_then(Value::as_str) {
+                        total_chars = total_chars.saturating_add(data.len());
+                    }
+                }
+            }
+        }
+    }
+    (total_chars, contents.len())
+}
+
+/// 识别文本中是否包含各主流 AI 客户端（Cline, Roo-Code, Cursor, Aider 等）常见的输出就地修剪/折叠占位标记
+pub fn is_truncated_or_folded_text(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    lower.contains("[output truncated")
+        || lower.contains("[result omitted")
+        || lower.contains("[tool result truncated")
+        || lower.contains("[output omitted")
+        || lower.contains("[content truncated")
+        || lower.contains("[image omitted")
+        || lower.contains("[image removed")
+        || lower.contains("truncated to save")
+        || lower.contains("... (truncated")
+        || lower.contains("...[truncated")
+        || lower.contains("[history truncated")
+        || lower.contains("[context truncated")
+        || lower.contains("<persisted-output>")
+}
+
+/// 检索 contents 中是否存在包含微观就地修剪、折叠或占位符的轮次最大索引
+pub fn find_micro_folding_boundary(contents: &[Value]) -> Option<usize> {
+    let mut last_folded_idx = None;
+    for (idx, content) in contents.iter().enumerate() {
+        if let Some(parts) = content.get("parts").and_then(Value::as_array) {
+            for part in parts {
+                if let Some(text) = part.get("text").and_then(Value::as_str) {
+                    if is_truncated_or_folded_text(text) {
+                        last_folded_idx = Some(idx);
+                        break;
+                    }
+                }
+                if let Some(fr) = part.get("functionResponse") {
+                    if let Some(resp) = fr.get("response") {
+                        let matches = if let Some(s) = resp.as_str() {
+                            is_truncated_or_folded_text(s)
+                        } else {
+                            is_truncated_or_folded_text(&resp.to_string())
+                        };
+                        if matches {
+                            last_folded_idx = Some(idx);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    last_folded_idx
+}
+
+/// 综合判断当前 contents 的压缩接续边界（结合宏观骤降、微观折叠与显式接续标记）
+pub fn determine_compaction_boundary(
+    contents: &[Value],
+    session_id: Option<&str>,
+) -> Option<usize> {
+    let explicit_boundary = find_compaction_continuation_boundary(contents);
+    if !crate::proxy::config::is_global_compaction_strip_enabled() {
+        return explicit_boundary;
+    }
+
+    let mut boundary = explicit_boundary;
+    let store = ThinkingStore::global();
+
+    // 方案一：宏观骤降联动 (基于同一会话的字符量与轮次高水位线)
+    if let Some(sid) = session_id {
+        let clean_sid = sid.trim();
+        if !clean_sid.is_empty() {
+            // 先检查近期（15 秒内）是否已判定过该会话的宏观压缩事件
+            let recent_macro_boundary = store
+                .compaction_events
+                .get(clean_sid)
+                .filter(|entry| entry.1.elapsed() < Duration::from_secs(15))
+                .map(|entry| entry.0);
+
+            let macro_boundary = if let Some(b) = recent_macro_boundary {
+                Some(b)
+            } else {
+                let (cur_chars, cur_turns) = calculate_contents_metrics(contents);
+                if store.check_macro_context_drop(clean_sid, cur_chars, cur_turns) {
+                    store.clear_session_for_compaction(clean_sid);
+                    // 压缩发生后，截至当前最新 prompt 之前的所有历史 model 轮次均属于待治理历史
+                    let mb = contents.len().checked_sub(2).unwrap_or(0);
+                    store
+                        .compaction_events
+                        .insert(clean_sid.to_string(), (mb, Instant::now()));
+                    Some(mb)
+                } else {
+                    None
+                }
+            };
+
+            if let Some(mb) = macro_boundary {
+                boundary = match boundary {
+                    Some(existing) => Some(existing.max(mb)),
+                    None => Some(mb),
+                };
+            }
+        }
+    }
+
+    // 方案二：微观局部折叠/占位符检测（检测 [Output truncated]、[Result omitted] 等特征）
+    if let Some(micro_b) = find_micro_folding_boundary(contents) {
+        boundary = match boundary {
+            Some(existing) => Some(existing.max(micro_b)),
+            None => Some(micro_b),
+        };
+    }
+
+    boundary
+}
+
 /// 模块级便捷接口：彻底清理指定会话的全部预压缩历史数据与签名缓存
 pub fn clear_session_for_compaction(store_key: &str) {
     ThinkingStore::global().clear_session_for_compaction(store_key);
@@ -1557,7 +1778,7 @@ pub fn finalize_gemini_contents_thinking_with_session(
     target_model: Option<&str>,
     session_id: Option<&str>,
 ) {
-    let compaction_boundary = find_compaction_continuation_boundary(contents);
+    let compaction_boundary = determine_compaction_boundary(contents, session_id);
 
     // 预先计算每一轮的前置因果锚点 (causal anchor)，以便无 ID 的 Gemini 原生工具调用也能合成确定性 ID
     let anchors: Vec<String> = (0..contents.len())
@@ -1573,11 +1794,15 @@ pub fn finalize_gemini_contents_thinking_with_session(
     // 若下一轮有新签名返回，则丢弃旧签名采纳新签名；若下一轮无签名，则由攒着的签名补充。
     let mut pending_thought_sig: Option<String> = None;
 
-    let initial_session_sig: Option<String> = session_id.and_then(|sid| {
-        crate::proxy::SignatureCache::global()
-            .get_session_signature(sid)
-            .filter(|s| is_likely_gemini_signature(s))
-    });
+    let initial_session_sig: Option<String> = if compaction_boundary.is_some() {
+        None
+    } else {
+        session_id.and_then(|sid| {
+            crate::proxy::SignatureCache::global()
+                .get_session_signature(sid)
+                .filter(|s| is_likely_gemini_signature(s))
+        })
+    };
 
     // 预先计算最后一个 model / 工具调用轮次的索引
     let last_model_idx = contents.iter().enumerate().rposition(|(_, m)| {
@@ -5666,5 +5891,202 @@ mod signature_placement_tests {
         assert!(first_input_contents[0]["parts"][0]
             .get("thoughtSignature")
             .is_none());
+    }
+
+    #[test]
+    fn test_global_compaction_strip_disabled_by_default() {
+        crate::proxy::config::set_global_compaction_strip_enabled(false);
+        let session_id = "sess_global_strip_disabled_test";
+
+        let regular_contents = vec![
+            json!({
+                "role": "model",
+                "parts": [{ "text": "turn 1" }]
+            }),
+            json!({
+                "role": "user",
+                "parts": [{ "text": "turn 2" }]
+            }),
+        ];
+
+        // 默认关闭状态下，无论传入什么 contents（只要没有显式 continuation 标记），boundary 必定为 None
+        assert_eq!(
+            determine_compaction_boundary(&regular_contents, Some(session_id)),
+            None
+        );
+
+        let micro_folded_contents = vec![
+            json!({
+                "role": "model",
+                "parts": [
+                    { "functionCall": { "id": "call_1", "name": "bash", "args": {} } }
+                ]
+            }),
+            json!({
+                "role": "user",
+                "parts": [{ "text": "[Output truncated] 1000 lines omitted" }]
+            }),
+            json!({
+                "role": "user",
+                "parts": [{ "text": "next command" }]
+            }),
+        ];
+
+        // 默认关闭状态下，微观折叠标记亦不生效，100% 保持既有行为与普通用户无干扰
+        assert_eq!(
+            determine_compaction_boundary(&micro_folded_contents, Some(session_id)),
+            None
+        );
+    }
+
+    #[test]
+    fn test_global_compaction_strip_macro_drop_triggers_strip_and_sentinel() {
+        crate::proxy::config::set_global_compaction_strip_enabled(true);
+        let session_id = "sess_global_strip_macro_drop_test";
+        let store = ThinkingStore::global();
+
+        // 模拟第 1 请求：历史多轮累积且字符数大（如 6 轮，5000 字符）
+        let initial_long_text = "a".repeat(5000);
+        let first_request = vec![
+            json!({ "role": "user", "parts": [{ "text": &initial_long_text }] }),
+            json!({ "role": "model", "parts": [{ "text": "response 1" }] }),
+            json!({ "role": "user", "parts": [{ "text": "prompt 2" }] }),
+            json!({ "role": "model", "parts": [{ "text": "response 2" }] }),
+            json!({ "role": "user", "parts": [{ "text": "prompt 3" }] }),
+            json!({ "role": "model", "parts": [{ "text": "response 3" }] }),
+        ];
+        let (chars1, turns1) = calculate_contents_metrics(&first_request);
+        assert!(!store.check_macro_context_drop(session_id, chars1, turns1));
+
+        // 预设一个旧的 session signature，模拟上一轮流式缓存的旧签名
+        crate::proxy::SignatureCache::global().cache_session_signature(
+            session_id,
+            "sig_old_session_sig_1234567890abcdef".to_string(),
+            5,
+        );
+
+        // 模拟第 2 请求：发生全协议无标记压缩（轮数从 6 骤降为 2，字符量从 5000+ 骤降至 200）
+        let mut second_request = vec![
+            json!({
+                "role": "model",
+                "parts": [
+                    { "text": "Historical summary" },
+                    {
+                        "functionCall": { "id": "old_tool", "name": "read_file", "args": {} },
+                        "thoughtSignature": "sig_expired_pre_compaction_signature_123"
+                    }
+                ]
+            }),
+            json!({
+                "role": "user",
+                "parts": [{ "text": "What to do next?" }]
+            }),
+        ];
+
+        let boundary = determine_compaction_boundary(&second_request, Some(session_id));
+        assert!(boundary.is_some());
+
+        finalize_gemini_contents_thinking_with_session(
+            &mut second_request,
+            true,
+            Some("gemini-2.5-flash"),
+            Some(session_id),
+        );
+
+        // 验证：
+        // 1. 压缩边界内的 Gemini 工具调用被安全赋予官方哨兵 SENTINEL_SIGNATURE (防 400)
+        let fc = &second_request[0]["parts"][1];
+        assert_eq!(fc["thoughtSignature"], SENTINEL_SIGNATURE);
+        // 2. 正文部件绝不挂载签名
+        assert!(second_request[0]["parts"][0]
+            .get("thoughtSignature")
+            .is_none());
+        // 3. 旧 session_sig 被完全拦截未复活
+        assert!(crate::proxy::SignatureCache::global()
+            .get_session_signature(session_id)
+            .is_none());
+
+        // 测试后重置开关以防干扰其他测试
+        crate::proxy::config::set_global_compaction_strip_enabled(false);
+    }
+
+    #[test]
+    fn test_global_compaction_strip_micro_folding_triggers_strip() {
+        crate::proxy::config::set_global_compaction_strip_enabled(true);
+        let session_id = "sess_global_strip_micro_folding_test";
+
+        // 微观场景：轮数未骤减，但历史工具输出就地折叠成 `[Output truncated]`
+        let mut folded_contents = vec![
+            json!({
+                "role": "model",
+                "parts": [
+                    { "text": "Calling long tool" },
+                    {
+                        "functionCall": { "id": "call_folded", "name": "cat_log", "args": {} },
+                        "thoughtSignature": "sig_old_invalidated_by_truncation_1234"
+                    }
+                ]
+            }),
+            json!({
+                "role": "user",
+                "parts": [{ "text": "[Output truncated] Log output too long..." }]
+            }),
+            json!({
+                "role": "user",
+                "parts": [{ "text": "Analyze the log" }]
+            }),
+        ];
+
+        let boundary = determine_compaction_boundary(&folded_contents, Some(session_id));
+        assert_eq!(boundary, Some(1));
+
+        finalize_gemini_contents_thinking_with_session(
+            &mut folded_contents,
+            true,
+            Some("gemini-2.5-pro"),
+            Some(session_id),
+        );
+
+        // 验证：微观折叠的 Gemini 工具调用被安全赋予哨兵锁定
+        let fc = &folded_contents[0]["parts"][1];
+        assert_eq!(fc["thoughtSignature"], SENTINEL_SIGNATURE);
+        assert!(folded_contents[0]["parts"][0]
+            .get("thoughtSignature")
+            .is_none());
+
+        // Claude 目标下微观折叠验证：必须彻底剥离签名，严禁发明注入哨兵
+        let mut claude_folded_contents = vec![
+            json!({
+                "role": "model",
+                "parts": [
+                    { "text": "Calling long tool" },
+                    {
+                        "functionCall": { "id": "call_folded_claude", "name": "cat_log", "args": {} },
+                        "thoughtSignature": "sig_claude_invalidated_by_truncation_1234"
+                    }
+                ]
+            }),
+            json!({
+                "role": "user",
+                "parts": [{ "text": "[Tool result truncated] Log output..." }]
+            }),
+            json!({
+                "role": "user",
+                "parts": [{ "text": "Analyze the log" }]
+            }),
+        ];
+
+        finalize_gemini_contents_thinking_with_session(
+            &mut claude_folded_contents,
+            true,
+            Some("claude-3-7-sonnet"),
+            Some(session_id),
+        );
+
+        let fc_claude = &claude_folded_contents[0]["parts"][1];
+        assert!(fc_claude.get("thoughtSignature").is_none());
+
+        // 测试后重置开关以防干扰其他测试
+        crate::proxy::config::set_global_compaction_strip_enabled(false);
     }
 }

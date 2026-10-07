@@ -192,6 +192,7 @@ static GLOBAL_LOG_RETENTION_DAYS: OnceLock<RwLock<u32>> = OnceLock::new();
 static GLOBAL_THINKING_STORE_ENABLED: OnceLock<RwLock<bool>> = OnceLock::new();
 static GLOBAL_THINKING_RETENTION_DAYS: OnceLock<RwLock<u32>> = OnceLock::new();
 static GLOBAL_THINKING_MAX_MEMORY_TURNS: OnceLock<RwLock<u32>> = OnceLock::new();
+static GLOBAL_ENABLE_GLOBAL_COMPACTION_STRIP: OnceLock<RwLock<bool>> = OnceLock::new();
 
 fn write_or_init<T: Clone>(slot: &OnceLock<RwLock<T>>, value: T) {
     if let Some(lock) = slot.get() {
@@ -228,6 +229,18 @@ pub fn is_thinking_store_enabled() -> bool {
         .unwrap_or(true)
 }
 
+pub fn is_global_compaction_strip_enabled() -> bool {
+    GLOBAL_ENABLE_GLOBAL_COMPACTION_STRIP
+        .get()
+        .and_then(|lock| lock.read().ok())
+        .map(|v| *v)
+        .unwrap_or(false)
+}
+
+pub fn set_global_compaction_strip_enabled(enabled: bool) {
+    write_or_init(&GLOBAL_ENABLE_GLOBAL_COMPACTION_STRIP, enabled);
+}
+
 pub fn get_thinking_retention_days() -> u32 {
     GLOBAL_THINKING_RETENTION_DAYS
         .get()
@@ -252,6 +265,7 @@ pub fn update_global_audit_config(
     thinking_store_enabled: bool,
     thinking_retention_days: u32,
     thinking_max_memory_turns: Option<u32>,
+    enable_global_compaction_strip: Option<bool>,
 ) {
     let mode = if payload_storage_mode == "full" {
         "full"
@@ -270,13 +284,16 @@ pub fn update_global_audit_config(
     );
     let max_turns = thinking_max_memory_turns.unwrap_or(600).clamp(10, 10_000);
     write_or_init(&GLOBAL_THINKING_MAX_MEMORY_TURNS, max_turns);
+    let strip_enabled = enable_global_compaction_strip.unwrap_or(false);
+    write_or_init(&GLOBAL_ENABLE_GLOBAL_COMPACTION_STRIP, strip_enabled);
     tracing::info!(
-        "[Audit] storage_mode={}, log_retention_days={}, thinking_store={}, thinking_retention_days={}, thinking_max_memory_turns={}",
+        "[Audit] storage_mode={}, log_retention_days={}, thinking_store={}, thinking_retention_days={}, thinking_max_memory_turns={}, global_compaction_strip={}",
         mode,
         log_retention_days.clamp(1, 3650),
         thinking_store_enabled,
         thinking_retention_days.clamp(1, 3650),
-        max_turns
+        max_turns,
+        strip_enabled
     );
 }
 
@@ -365,6 +382,10 @@ pub struct ExperimentalConfig {
     /// 启用 Claude Cowork 手动深度归档协议支持 (高危选项，默认 false)
     #[serde(default = "default_false")]
     pub enable_cowork_manual_compact: bool,
+
+    /// 全局压缩剥离签名 (Global Compaction Signature Stripping) (试验性选项，默认 false)
+    #[serde(default = "default_false")]
+    pub enable_global_compaction_strip: bool,
 }
 
 impl Default for ExperimentalConfig {
@@ -382,6 +403,7 @@ impl Default for ExperimentalConfig {
             enable_cowork_auto_compact: false,
             cowork_compact_threshold: default_cowork_compact_threshold(),
             enable_cowork_manual_compact: false,
+            enable_global_compaction_strip: false,
         }
     }
 }

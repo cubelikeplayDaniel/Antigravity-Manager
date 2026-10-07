@@ -19,6 +19,8 @@ interface ThinkingBudgetProps {
     onThinkingMaxMemoryTurnsChange?: (turns: number) => void;
     thinkingRetentionDays?: number;
     onThinkingRetentionDaysChange?: (days: number) => void;
+    globalCompactionStripEnabled?: boolean;
+    onGlobalCompactionStripChange?: (enabled: boolean) => void;
 }
 
 interface ConcurrencyGuidePreset {
@@ -134,6 +136,8 @@ export default function ThinkingBudget({
     onThinkingMaxMemoryTurnsChange,
     thinkingRetentionDays = 15,
     onThinkingRetentionDaysChange,
+    globalCompactionStripEnabled = false,
+    onGlobalCompactionStripChange,
 }: ThinkingBudgetProps) {
     const { t } = useTranslation();
     const [isSaving, setIsSaving] = useState(false);
@@ -467,6 +471,36 @@ export default function ThinkingBudget({
                         className="toggle toggle-sm toggle-primary shrink-0"
                         checked={thinkingStoreEnabled}
                         onChange={(e) => onThinkingStoreChange(e.target.checked)}
+                    />
+                </div>
+            )}
+
+            {/* 0.1 全局压缩剥离签名 (Global Compaction Signature Stripping) */}
+            {onGlobalCompactionStripChange && (
+                <div className="p-3.5 bg-amber-50/70 dark:bg-amber-900/20 border border-amber-200/80 dark:border-amber-800/40 rounded-xl flex items-center justify-between gap-4 shadow-2xs">
+                    <div className="space-y-0.5">
+                        <div className="flex items-center gap-2">
+                            <span className="text-xs font-bold text-gray-900 dark:text-white">
+                                {t("proxy.config.thinking_budget.global_compaction_strip", { defaultValue: "全局压缩剥离签名" })}
+                            </span>
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800/60">
+                                {t("proxy.config.thinking_budget.experimental_tag", { defaultValue: "试验性" })}
+                            </span>
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 border border-gray-200 dark:border-gray-700">
+                                {t("proxy.config.thinking_budget.default_off_tag", { defaultValue: "默认关闭" })}
+                            </span>
+                        </div>
+                        <p className="text-xs text-gray-600 dark:text-gray-300 max-w-xl leading-relaxed">
+                            {t("proxy.config.thinking_budget.global_compaction_strip_desc", {
+                                defaultValue: "默认情况下保持关闭，仅对 Claude Code CLI 与 Desktop (Cowork) 的特定压缩特征触发签名剥离。开启后全局生效（协议无关、客户端无关），自动识别会话上下文回落与就地折叠，隔离失效签名并以官方哨兵锁定。"
+                            })}
+                        </p>
+                    </div>
+                    <input
+                        type="checkbox"
+                        className="toggle toggle-sm toggle-warning shrink-0"
+                        checked={globalCompactionStripEnabled}
+                        onChange={(e) => onGlobalCompactionStripChange(e.target.checked)}
                     />
                 </div>
             )}
