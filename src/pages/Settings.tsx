@@ -37,7 +37,7 @@ function normalizeDataDirDisplay(path: string): string {
 }
 
 function Settings() {
-    const { t, i18n } = useTranslation();
+    const { t } = useTranslation();
     const { config, loadConfig, saveConfig, updateLanguage, updateTheme } = useConfigStore();
     const { enable, disable, isEnabled } = useDebugConsole();
     const [activeTab, setActiveTab] = useState<'general' | 'account' | 'proxy' | 'advanced' | 'debug' | 'about'>('general');
@@ -558,10 +558,6 @@ function Settings() {
                                     onChange={(e) => {
                                         const newLang = e.target.value;
                                         setFormData({ ...formData, language: newLang });
-                                        document.documentElement.dir = newLang === 'ar' ? 'rtl' : 'ltr';
-                                        startTransition(() => {
-                                            i18n.changeLanguage(newLang);
-                                        });
                                         updateLanguage(newLang);
                                     }}
                                 >
@@ -575,6 +571,8 @@ function Settings() {
                                     <option value="ko">한국어</option>
                                     <option value="ru">Русский</option>
                                     <option value="ar">العربية</option>
+                                    <option value="es">Español</option>
+                                    <option value="my">Bahasa Melayu</option>
                                 </select>
                             </div>
 

@@ -1,5 +1,3 @@
-import { startTransition } from 'react';
-import i18n from '../../i18n';
 import { LayoutDashboard, Users, Network, Activity, BarChart3, Settings, Lock, KeyRound } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useConfigStore } from '../../stores/useConfigStore';
@@ -17,7 +15,7 @@ import type { NavItem } from './constants';
  */
 function Navbar() {
     const { t } = useTranslation();
-    const { config, saveConfig } = useConfigStore();
+    const { config, updateLanguage, updateTheme } = useConfigStore();
 
     // 创建导航项(包含翻译后的标签)
     const navItems: NavItem[] = [
@@ -49,11 +47,7 @@ function Navbar() {
 
             // @ts-ignore
             const transition = document.startViewTransition(async () => {
-                saveConfig({
-                    ...config,
-                    theme: newTheme,
-                    language: config.language
-                }, true);
+                await updateTheme(newTheme);
             });
 
             transition.ready.then(() => {
@@ -76,33 +70,14 @@ function Navbar() {
             });
         } else {
             // Fallback: direct switch (Linux or browsers without View Transition)
-            await saveConfig({
-                ...config,
-                theme: newTheme,
-                language: config.language
-            }, true);
+            await updateTheme(newTheme);
         }
     };
 
-    // 语言切换逻辑 (即时响应 + 非阻塞平滑过渡)
+    // 语言切换逻辑 (即时乐观更新 + 串行尾随持久化)
     const handleLanguageChange = (langCode: string) => {
-        if (!config) return;
-
-        // 1. 立即设置 RTL / LTR 布局方向
-        document.documentElement.dir = langCode === 'ar' ? 'rtl' : 'ltr';
-
-        // 2. 使用 startTransition 触发非阻塞渐进式重绘，消除海量信息面板的主线程卡死
-        startTransition(() => {
-            i18n.changeLanguage(langCode);
-        });
-
-        // 3. 异步持久化配置，绝不阻塞 UI 线程
-        saveConfig({
-            ...config,
-            language: langCode,
-            theme: config.theme
-        }, true).catch(err => {
-            console.error('Failed to persist language config:', err);
+        updateLanguage(langCode).catch(err => {
+            console.error('Failed to update language:', err);
         });
     };
 

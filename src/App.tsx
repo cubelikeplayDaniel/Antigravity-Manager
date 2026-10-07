@@ -14,8 +14,8 @@ import { ApiKeyFun } from './pages/ApiKeyFun';
 import { UpdateNotification } from './components/UpdateNotification';
 import SuggestionDeleteThinkingModal from './components/common/SuggestionDeleteThinkingModal';
 import DebugConsole from './components/debug/DebugConsole';
-import { useEffect, useState, startTransition } from 'react';
-import { useConfigStore } from './stores/useConfigStore';
+import { useEffect, useState } from 'react';
+import { useConfigStore, normalizeLanguageCode } from './stores/useConfigStore';
 import { useAccountStore } from './stores/useAccountStore';
 import { useTranslation } from 'react-i18next';
 import { listen } from '@tauri-apps/api/event';
@@ -77,15 +77,16 @@ function App() {
     loadConfig();
   }, [loadConfig]);
 
-  // Sync language from config (仅在不同步时通过 startTransition 非阻塞调度)
+  // Sync language from config (仅在不同步时调度，避免无效重入)
   useEffect(() => {
-    if (config?.language && i18n.language !== config.language) {
-      startTransition(() => {
-        i18n.changeLanguage(config.language);
-      });
-      document.documentElement.dir = config.language === 'ar' ? 'rtl' : 'ltr';
+    if (!config?.language) return;
+    const targetLang = normalizeLanguageCode(config.language);
+    const currentLang = normalizeLanguageCode(i18n.language);
+    if (targetLang !== currentLang) {
+      i18n.changeLanguage(targetLang);
+      document.documentElement.dir = targetLang === 'ar' ? 'rtl' : 'ltr';
     }
-  }, [config?.language, i18n]);
+  }, [config?.language, i18n.language]);
 
   // Listen for tray events
   useEffect(() => {
