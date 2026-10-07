@@ -45,7 +45,7 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
     const handleGuideModalConfirm = () => {
         setIsGuideModalOpen(false);
         onChange({ enable_cowork_manual_compact: true });
-        showToast("已成功启用 ./compact 深度归档增强", "success");
+        showToast(t("proxy.agent_settings.claude_desktop.toast_manual_enabled", { defaultValue: "已成功启用 ./compact 深度归档增强" }), "success");
     };
 
     const [patchStatus, setPatchStatus] = useState<{
@@ -81,7 +81,7 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
         try {
             const { open } = await import("@tauri-apps/plugin-dialog");
             const selected = await open({
-                title: "选择 Claude.app 应用程序或二进制文件",
+                title: t("proxy.agent_settings.claude_desktop.browse_title_app", { defaultValue: "选择 Claude.app 应用程序或二进制文件" }),
                 multiple: false,
                 directory: false,
             });
@@ -94,7 +94,7 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
             try {
                 const { open } = await import("@tauri-apps/plugin-dialog");
                 const selected = await open({
-                    title: "选择 Claude.app 应用程序目录",
+                    title: t("proxy.agent_settings.claude_desktop.browse_title_dir", { defaultValue: "选择 Claude.app 应用程序目录" }),
                     multiple: false,
                     directory: true,
                 });
@@ -103,7 +103,7 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
                     handleCheckPatch(selected);
                 }
             } catch (innerErr: any) {
-                showToast("无法打开文件选择对话框: " + String(innerErr), "error");
+                showToast(t("proxy.agent_settings.claude_desktop.browse_error_toast", { defaultValue: "无法打开文件选择对话框: " }) + String(innerErr), "error");
             }
         }
     };
@@ -185,7 +185,7 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
             if (isClaudeRunningOnConfirm) {
                 // 3. 完成后自动重新打开 Claude
                 await invoke("launch_claude_desktop", { filePath: activeTargetPath || null });
-                showToast("已成功注入 8k 深度归档补丁，并已自动重新打开 Claude！", "success");
+                showToast(t("proxy.agent_settings.claude_desktop.toast_patch_restarted", { defaultValue: "已成功注入 8k 深度归档补丁，并已自动重新打开 Claude！" }), "success");
             } else {
                 showToast(res, "success");
             }
@@ -321,12 +321,14 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
 
                     {/* 快捷推荐预设胶囊 */}
                     <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                        <span className="text-[11px] text-gray-400 dark:text-gray-500 mr-1">快捷预设:</span>
+                        <span className="text-[11px] text-gray-400 dark:text-gray-500 mr-1">
+                            {t("proxy.agent_settings.claude_desktop.presets_label", { defaultValue: "快捷预设:" })}
+                        </span>
                         {[
-                            { label: "150,000 (极速)", val: 150000 },
-                            { label: "180,000 (敏捷)", val: 180000 },
-                            { label: "200,000 (官方推荐)", val: 200000 },
-                            { label: "250,000 (宽裕)", val: 250000 },
+                            { label: t("proxy.agent_settings.claude_desktop.preset_fast", { defaultValue: "150,000 (极速)" }), val: 150000 },
+                            { label: t("proxy.agent_settings.claude_desktop.preset_agile", { defaultValue: "180,000 (敏捷)" }), val: 180000 },
+                            { label: t("proxy.agent_settings.claude_desktop.preset_recommended", { defaultValue: "200,000 (官方推荐)" }), val: 200000 },
+                            { label: t("proxy.agent_settings.claude_desktop.preset_relaxed", { defaultValue: "250,000 (宽裕)" }), val: 250000 },
                         ].map((preset) => (
                             <button
                                 key={preset.val}
@@ -361,14 +363,15 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
                         <div className="space-y-1 max-w-xl">
                             <div className="flex items-center gap-1.5 font-semibold text-xs text-purple-900 dark:text-purple-300">
                                 <Sparkles size={14} className="text-purple-600 dark:text-purple-400 shrink-0" />
-                                <span>Claude Cowork 深度归档增强 (Deep Compact)</span>
+                                <span>{t("proxy.agent_settings.claude_desktop.deep_compact_title", { defaultValue: "Claude Cowork 深度归档增强 (Deep Compact)" })}</span>
                                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-100 dark:bg-purple-950/70 text-purple-700 dark:text-purple-300 border border-purple-300/80 dark:border-purple-800/60 font-medium">
-                                    实验性功能
+                                    {t("proxy.agent_settings.claude_desktop.experimental_tag", { defaultValue: "实验性功能" })}
                                 </span>
                             </div>
                             <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-normal">
-                                针对 Claude Cowork 模式无法通过 <code className="px-1 py-0.5 bg-gray-100 dark:bg-base-300 rounded font-mono text-[10px]">/compact</code> 进行深度归档（被桌面拦截为未知技能且官方强制保留 50% 历史）的底层缺陷。
-                                开启后支持在会话中发送 <code className="px-1 py-0.5 bg-gray-100 dark:bg-base-300 rounded font-mono text-[10px]">./compact</code> 穿透触发深度归档，并可配合下方微创补丁注入 8k 深度归档活跃上下文硬预算。后台已与上方自动压缩无缝互锁，绝不撞车。
+                                {t("proxy.agent_settings.claude_desktop.deep_compact_desc", {
+                                    defaultValue: "针对 Claude Cowork 模式无法通过 /compact 进行深度归档（被桌面拦截为未知技能且官方强制保留 50% 历史）的底层缺陷。开启后支持在会话中发送 ./compact 穿透触发深度归档，并可配合下方微创补丁注入 8k 深度归档活跃上下文硬预算。后台已与上方自动压缩无缝互锁，绝不撞车。"
+                                })}
                             </p>
                         </div>
                         <button
@@ -377,7 +380,7 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
                             className="btn btn-xs bg-purple-50 hover:bg-purple-100 dark:bg-purple-950/40 dark:hover:bg-purple-900/50 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-800 text-[11px] gap-1 shrink-0 mt-0.5"
                         >
                             <BookOpen size={12} />
-                            <span>{showGuide ? "收起使用教程" : "使用教程与原理解析"}</span>
+                            <span>{showGuide ? t("proxy.agent_settings.claude_desktop.guide_toggle_close", { defaultValue: "收起使用教程" }) : t("proxy.agent_settings.claude_desktop.guide_toggle_open", { defaultValue: "使用教程与原理解析" })}</span>
                             {showGuide ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
                         </button>
                     </div>
@@ -387,24 +390,24 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
                         <div className="p-3.5 bg-gradient-to-br from-purple-50/70 to-indigo-50/40 dark:from-purple-950/30 dark:to-base-200/50 rounded-lg border border-purple-200/70 dark:border-purple-800/40 text-[11px] space-y-2 animate-fadeIn">
                             <div className="font-semibold text-purple-900 dark:text-purple-200 flex items-center gap-1.5">
                                 <HelpCircle size={13} className="text-purple-600 dark:text-purple-400" />
-                                <span>为什么需要打【./compact】？核心机制与操作指南</span>
+                                <span>{t("proxy.agent_settings.claude_desktop.guide_title", { defaultValue: "为什么需要打【./compact】？核心机制与操作指南" })}</span>
                             </div>
                             <ol className="list-decimal list-inside space-y-1.5 text-gray-600 dark:text-gray-300 leading-relaxed pl-1">
                                 <li>
-                                    <strong>为什么不是 <code>/compact</code>？</strong>
-                                    Claude Desktop 前端缺少命令解析器，直接敲 <code>/compact</code> 会被前端误包装为未知 Skill 拦截报错；而在前面加上小圆点输入 <strong><code>./compact</code></strong>，前端会将其判定为普通聊天文本放行至网关。
+                                    <strong>{t("proxy.agent_settings.claude_desktop.guide_item_1_title", { defaultValue: "为什么不是 /compact？" })}</strong>{" "}
+                                    {t("proxy.agent_settings.claude_desktop.guide_item_1_desc", { defaultValue: "Claude Desktop 前端缺少命令解析器，直接敲 /compact 会被前端误包装为未知 Skill 拦截报错；而在前面加上小圆点输入 ./compact，前端会将其判定为普通聊天文本放行至网关。" })}
                                 </li>
                                 <li>
-                                    <strong>网关如何智能捕获与协同？</strong>
-                                    8045 网关在捕获到 <code>./compact</code> 时，就地向客户端协调回送微创自愈假信号，激活客户端内置的 Summarizer 进行历史深度折叠，并在完成后优雅回显真实节省的 Token 量（如 <code>Compacted conversation · saved 52k tokens</code>）。
+                                    <strong>{t("proxy.agent_settings.claude_desktop.guide_item_2_title", { defaultValue: "网关如何智能捕获与协同？" })}</strong>{" "}
+                                    {t("proxy.agent_settings.claude_desktop.guide_item_2_desc", { defaultValue: "8045 网关在捕获到 ./compact 时，就地向客户端协调回送微创自愈假信号，激活客户端内置的 Summarizer 进行历史深度折叠，并在完成后优雅回显真实节省的 Token 量（如 Compacted conversation · saved 52k tokens）。" })}
                                 </li>
                                 <li>
-                                    <strong>视觉界面保留 vs 底层物理轻量化</strong>：
-                                    压缩后，您在桌面 UI 聊天记录中依然能完整向上滚动查看所有历史讨论（对视觉零破坏）；但在底层发送给大模型处理时，前面的数百轮历史已被 100% 浓缩为轻量级摘要，彻底释放 80%~90% 的上下文包袱，恢复秒级响应！
+                                    <strong>{t("proxy.agent_settings.claude_desktop.guide_item_3_title", { defaultValue: "视觉界面保留 vs 底层物理轻量化：" })}</strong>{" "}
+                                    {t("proxy.agent_settings.claude_desktop.guide_item_3_desc", { defaultValue: "压缩后，您在桌面 UI 聊天记录中依然能完整向上滚动查看所有历史讨论（对视觉零破坏）；但在底层发送给大模型处理时，前面的数百轮历史已被 100% 浓缩为轻量级摘要，彻底释放 80%~90% 的上下文包袱，恢复秒级响应！" })}
                                 </li>
                                 <li>
-                                    <strong>自动压缩与手动深度归档的智能互锁</strong>：
-                                    两者同时开启时，网关在手动 <code>./compact</code> 期间会自动压制自动压缩门限，两者无缝共生、智能互锁，彻底杜绝双重 400 撞车！
+                                    <strong>{t("proxy.agent_settings.claude_desktop.guide_item_4_title", { defaultValue: "自动压缩与手动深度归档的智能互锁：" })}</strong>{" "}
+                                    {t("proxy.agent_settings.claude_desktop.guide_item_4_desc", { defaultValue: "两者同时开启时，网关在手动 ./compact 期间会自动压制自动压缩门限，两者无缝共生、智能互锁，彻底杜绝双重 400 撞车！" })}
                                 </li>
                             </ol>
                         </div>
@@ -415,10 +418,12 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
                         <div className="space-y-0.5">
                             <div className="text-xs font-semibold text-gray-900 dark:text-white flex items-center gap-1.5">
                                 <Zap size={13} className="text-purple-600 dark:text-purple-400" />
-                                <span>启用 ./compact 对话框指令穿透</span>
+                                <span>{t("proxy.agent_settings.claude_desktop.manual_compact_title", { defaultValue: "启用 ./compact 对话框指令穿透" })}</span>
                             </div>
                             <p className="text-[11px] text-gray-500 dark:text-gray-400">
-                                开启后，在 Cowork 任意会话对话框中直接发送 <code className="px-1 py-0.5 bg-gray-100 dark:bg-base-300 rounded font-mono text-[10px]">./compact</code> 即可随时按需触发全量历史折叠压缩。默认关闭。
+                                {t("proxy.agent_settings.claude_desktop.manual_compact_desc", {
+                                    defaultValue: "开启后，在 Cowork 任意会话对话框中直接发送 ./compact 即可随时按需触发全量历史折叠压缩。默认关闭。"
+                                })}
                             </p>
                         </div>
                         <label className="relative inline-flex items-center cursor-pointer select-none shrink-0">
@@ -437,7 +442,7 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
                         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                             <div className="text-[11px] text-gray-700 dark:text-gray-300 flex items-center gap-1.5">
                                 <Wrench size={13} className="text-purple-600 dark:text-purple-400 shrink-0" />
-                                <span className="font-medium">客户端二进制微创补丁工具 (仅 macOS)</span>
+                                <span className="font-medium">{t("proxy.agent_settings.claude_desktop.patch_tool_title", { defaultValue: "客户端二进制微创补丁工具 (仅 macOS)" })}</span>
                             </div>
                             <div className="flex items-center gap-2 shrink-0 flex-wrap">
                                 <button
@@ -447,7 +452,7 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
                                     className="btn btn-xs h-7 min-h-[28px] px-3 bg-white dark:bg-base-100 border border-gray-200 dark:border-base-300 hover:border-purple-300 text-gray-700 dark:text-gray-300 text-[11px] gap-1.5 shrink-0 whitespace-nowrap"
                                 >
                                     <RefreshCw size={12} className={isCheckingPatch ? "animate-spin text-purple-500" : ""} />
-                                    <span>检查补丁状态</span>
+                                    <span>{t("proxy.agent_settings.claude_desktop.btn_check_patch", { defaultValue: "检查补丁状态" })}</span>
                                 </button>
                                 <button
                                     type="button"
@@ -456,7 +461,7 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
                                     className="btn btn-xs h-7 min-h-[28px] px-3.5 bg-purple-600 hover:bg-purple-700 text-white text-[11px] gap-1.5 shadow-xs shrink-0 whitespace-nowrap"
                                 >
                                     <Wrench size={12} />
-                                    <span>一键注入补丁</span>
+                                    <span>{t("proxy.agent_settings.claude_desktop.btn_apply_patch", { defaultValue: "一键注入补丁" })}</span>
                                 </button>
                                 <button
                                     type="button"
@@ -465,7 +470,7 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
                                     className="btn btn-xs h-7 min-h-[28px] px-3 bg-gray-200 dark:bg-base-300 hover:bg-gray-300 dark:hover:bg-base-100 text-gray-700 dark:text-gray-300 text-[11px] gap-1.5 shrink-0 whitespace-nowrap"
                                 >
                                     <RotateCcw size={12} />
-                                    <span>还原原生</span>
+                                    <span>{t("proxy.agent_settings.claude_desktop.btn_revert_patch", { defaultValue: "还原原生" })}</span>
                                 </button>
                             </div>
                         </div>
@@ -474,7 +479,7 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
                         <div className="space-y-1.5 pt-1 text-[11px]">
                             {patchStatus?.available_installations && patchStatus.available_installations.length > 0 && (
                                 <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-                                    <span className="text-gray-500 dark:text-gray-400 shrink-0">检测到本机安装:</span>
+                                    <span className="text-gray-500 dark:text-gray-400 shrink-0">{t("proxy.agent_settings.claude_desktop.detected_installations", { defaultValue: "检测到本机安装:" })}</span>
                                     <select
                                         value={selectedPath}
                                         onChange={(e) => {
@@ -486,7 +491,7 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
                                     >
                                         {patchStatus.available_installations.map((inst, idx) => (
                                             <option key={idx} value={inst.path}>
-                                                v{inst.version} ({inst.size_mb} MB) {inst.is_8k ? " [8k深度补丁]" : inst.is_patched ? " [旧版补丁需升级]" : " [官方原版]"} - {inst.path}
+                                                v{inst.version} ({inst.size_mb} MB){inst.is_8k ? t("proxy.agent_settings.claude_desktop.patch_tag_8k", { defaultValue: " [8k深度补丁]" }) : inst.is_patched ? t("proxy.agent_settings.claude_desktop.patch_tag_legacy", { defaultValue: " [旧版补丁需升级]" }) : t("proxy.agent_settings.claude_desktop.patch_tag_original", { defaultValue: " [官方原版]" })} - {inst.path}
                                             </option>
                                         ))}
                                     </select>
@@ -494,7 +499,7 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
                             )}
 
                             <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-                                <span className="text-gray-500 dark:text-gray-400 shrink-0">自定义路径:</span>
+                                <span className="text-gray-500 dark:text-gray-400 shrink-0">{t("proxy.agent_settings.claude_desktop.custom_path", { defaultValue: "自定义路径:" })}</span>
                                 <div
                                     onDragOver={(e) => {
                                         e.preventDefault();
@@ -511,7 +516,7 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
                                     <input
                                         type="text"
                                         value={customPath}
-                                        placeholder="支持直接将 Claude.app 拖入此处，或点击右侧浏览"
+                                        placeholder={t("proxy.agent_settings.claude_desktop.custom_path_placeholder", { defaultValue: "支持直接将 Claude.app 拖入此处，或点击右侧浏览" })}
                                         onChange={(e) => setCustomPath(e.target.value)}
                                         onBlur={() => {
                                             if (customPath.trim()) {
@@ -523,11 +528,11 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
                                     <button
                                         type="button"
                                         onClick={handleBrowsePath}
-                                        title="浏览选择 Claude.app 目录或可执行文件"
+                                        title={t("proxy.agent_settings.claude_desktop.btn_browse_tooltip", { defaultValue: "浏览选择 Claude.app 目录或可执行文件" })}
                                         className="btn btn-xs bg-white dark:bg-base-100 border border-gray-200 dark:border-base-300 hover:border-purple-300 text-gray-700 dark:text-gray-300 text-[11px] px-2 gap-1 shrink-0"
                                     >
                                         <FolderOpen size={12} className="text-amber-500" />
-                                        <span>浏览...</span>
+                                        <span>{t("proxy.agent_settings.claude_desktop.btn_browse", { defaultValue: "浏览..." })}</span>
                                     </button>
                                 </div>
                             </div>
@@ -544,7 +549,9 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
                                     : "bg-gray-100 dark:bg-base-100 border-gray-200 dark:border-base-300 text-gray-700 dark:text-gray-300"
                             }`}>
                                 <div className="font-semibold mb-0.5">{patchStatus.message}</div>
-                                <div className="text-[10px] text-gray-500 truncate" title={patchStatus.file_path}>生效路径: {patchStatus.file_path}</div>
+                                <div className="text-[10px] text-gray-500 truncate" title={patchStatus.file_path}>
+                                    {t("proxy.agent_settings.claude_desktop.active_path_label", { defaultValue: "生效路径:" })} {patchStatus.file_path}
+                                </div>
                             </div>
                         )}
                     </div>
@@ -580,29 +587,29 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
             {/* 弹窗 1: 启用说明与安全边界 (极简清晰版) */}
             <ModalDialog
                 isOpen={isRiskModalOpen}
-                title="启用 Cowork 压缩增强 (实验性)"
+                title={t("proxy.agent_settings.modals.risk_title", { defaultValue: "启用 Cowork 压缩增强 (实验性)" })}
                 type="info"
-                confirmText="下一步：查看用法"
-                cancelText="取消"
+                confirmText={t("proxy.agent_settings.modals.risk_confirm", { defaultValue: "下一步：查看用法" })}
+                cancelText={t("common.cancel", { defaultValue: "取消" })}
                 onConfirm={handleRiskModalConfirm}
                 onCancel={() => setIsRiskModalOpen(false)}
             >
                 <div className="space-y-2.5 text-xs text-gray-600 dark:text-gray-300">
                     <div className="p-2.5 bg-blue-50/70 dark:bg-blue-950/30 rounded-lg border border-blue-200/60 dark:border-blue-800/40 space-y-1">
                         <div className="font-semibold text-blue-900 dark:text-blue-200 flex items-center gap-1.5">
-                            <span>✨ 只开开关（完全零风险、零侵入）</span>
+                            <span>{t("proxy.agent_settings.modals.risk_opt1_title", { defaultValue: "✨ 只开开关（完全零风险、零侵入）" })}</span>
                         </div>
                         <div className="text-[11px] text-blue-800/80 dark:text-blue-300/80 leading-relaxed">
-                            不修改任何本地软件。开启后即可在会话中敲 <code className="font-mono font-bold px-1 bg-white dark:bg-base-100 rounded">./compact</code> 触发官方原生折半压缩（安全释放 ~40% 上下文）。
+                            {t("proxy.agent_settings.modals.risk_opt1_desc", { defaultValue: "不修改任何本地软件。开启后即可在会话中敲 ./compact 触发官方原生折半压缩（安全释放 ~40% 上下文）。" })}
                         </div>
                     </div>
 
                     <div className="p-2.5 bg-purple-50/70 dark:bg-purple-950/30 rounded-lg border border-purple-200/60 dark:border-purple-800/40 space-y-1">
                         <div className="font-semibold text-purple-900 dark:text-purple-200 flex items-center gap-1.5">
-                            <span>⚡ 配合补丁（可选，极限深度瘦身）</span>
+                            <span>{t("proxy.agent_settings.modals.risk_opt2_title", { defaultValue: "⚡ 配合补丁（可选，极限深度瘦身）" })}</span>
                         </div>
                         <div className="text-[11px] text-purple-800/80 dark:text-purple-300/80 leading-relaxed">
-                            若后续点击注入下方微创补丁，将破除官方 50% 历史残留限制，把上下文活跃消息直接削减到 8k 以下（释放 85%+）。系统自动隔离备份，随时一键还原。
+                            {t("proxy.agent_settings.modals.risk_opt2_desc", { defaultValue: "若后续点击注入下方微创补丁，将破除官方 50% 历史残留限制，把上下文活跃消息直接削减到 8k 以下（释放 85%+）。系统自动隔离备份，随时一键还原。" })}
                         </div>
                     </div>
                 </div>
@@ -611,24 +618,26 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
             {/* 弹窗 2: ./compact 极简教学指南 */}
             <ModalDialog
                 isOpen={isGuideModalOpen}
-                title="使用教学：如何触发压缩"
+                title={t("proxy.agent_settings.modals.guide_title", { defaultValue: "使用教学：如何触发压缩" })}
                 type="success"
-                confirmText="我已掌握，立即开启"
-                cancelText="返回"
+                confirmText={t("proxy.agent_settings.modals.guide_confirm", { defaultValue: "我已掌握，立即开启" })}
+                cancelText={t("common.back", { defaultValue: "返回" })}
                 onConfirm={handleGuideModalConfirm}
                 onCancel={() => setIsGuideModalOpen(false)}
             >
                 <div className="space-y-3 text-xs text-gray-600 dark:text-gray-300">
                     <p className="text-gray-700 dark:text-gray-200">
-                        在 Claude Cowork 任意对话框中直接发送：
+                        {t("proxy.agent_settings.modals.guide_instruction", { defaultValue: "在 Claude Cowork 任意对话框中直接发送：" })}
                     </p>
                     <div className="flex items-center justify-between p-2.5 bg-purple-100/70 dark:bg-purple-950/50 rounded-lg border border-purple-300/70 dark:border-purple-700 font-mono text-sm text-purple-900 dark:text-purple-200 font-bold">
                         <span>./compact</span>
-                        <span className="text-[11px] font-normal text-purple-600 dark:text-purple-300">（必须带小圆点）</span>
+                        <span className="text-[11px] font-normal text-purple-600 dark:text-purple-300">
+                            {t("proxy.agent_settings.modals.guide_dot_note", { defaultValue: "（必须带小圆点）" })}
+                        </span>
                     </div>
                     <div className="text-[11px] text-gray-500 dark:text-gray-400 space-y-1 leading-relaxed">
-                        <p>• <strong>为什么带点</strong>：因为直接打 <code>/compact</code> 会被桌面拦截，带点可穿透网关。</p>
-                        <p>• <strong>聊天记录不丢</strong>：UI 界面历史完整可见，底层自动减负恢复极速响应。</p>
+                        <p>{t("proxy.agent_settings.modals.guide_bullet_1", { defaultValue: "• 为什么带点：因为直接打 /compact 会被桌面拦截，带点可穿透网关。" })}</p>
+                        <p>{t("proxy.agent_settings.modals.guide_bullet_2", { defaultValue: "• 聊天记录不丢：UI 界面历史完整可见，底层自动减负恢复极速响应。" })}</p>
                     </div>
                 </div>
             </ModalDialog>
@@ -636,10 +645,10 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
             {/* 弹窗 3: 补丁注入运行状态检测与自动重启生命周期弹窗 */}
             <ModalDialog
                 isOpen={isConfirmPatchModalOpen}
-                title={isClaudeRunningOnConfirm ? "退出 Claude 并注入" : "是否确认注入"}
+                title={isClaudeRunningOnConfirm ? t("proxy.agent_settings.modals.patch_quit_title", { defaultValue: "退出 Claude 并注入" }) : t("proxy.agent_settings.modals.patch_confirm_title", { defaultValue: "是否确认注入" })}
                 type={isClaudeRunningOnConfirm ? "confirm" : "info"}
-                confirmText={isClaudeRunningOnConfirm ? "退出 Claude 并注入" : "确认注入"}
-                cancelText="取消"
+                confirmText={isClaudeRunningOnConfirm ? t("proxy.agent_settings.modals.patch_running_confirm", { defaultValue: "退出 Claude 并注入" }) : t("proxy.agent_settings.modals.patch_normal_confirm", { defaultValue: "确认注入" })}
+                cancelText={t("common.cancel", { defaultValue: "取消" })}
                 isDestructive={isClaudeRunningOnConfirm}
                 isLoading={isPatchOperationLoading}
                 onConfirm={handleConfirmExecutePatch}
@@ -648,30 +657,30 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
                 {isClaudeRunningOnConfirm ? (
                     <div className="space-y-2.5 text-xs text-gray-600 dark:text-gray-300">
                         <p className="leading-relaxed">
-                            检测到 <strong>Claude Desktop</strong> 客户端当前正在运行中。
+                            {t("proxy.agent_settings.modals.patch_running_detected", { defaultValue: "检测到 Claude Desktop 客户端当前正在运行中。" })}
                         </p>
                         <div className="p-2.5 bg-amber-50 dark:bg-amber-950/30 rounded-lg border border-amber-200 dark:border-amber-800/40 text-amber-800 dark:text-amber-300 space-y-1">
                             <div className="font-semibold flex items-center gap-1.5">
                                 <AlertTriangle size={14} className="shrink-0 text-amber-600 dark:text-amber-400" />
-                                <span>注入前需退出客户端</span>
+                                <span>{t("proxy.agent_settings.modals.patch_running_warning_title", { defaultValue: "注入前需退出客户端" })}</span>
                             </div>
                             <p className="text-[11px] leading-relaxed">
-                                注入补丁需要先退出正在运行的 Claude 客户端以解除文件锁并加载新二进制。<strong>注入完成后，系统将自动为您重新打开 Claude。</strong>
+                                {t("proxy.agent_settings.modals.patch_running_warning_desc", { defaultValue: "注入补丁需要先退出正在运行的 Claude 客户端以解除文件锁并加载新二进制。注入完成后，系统将自动为您重新打开 Claude。" })}
                             </p>
                         </div>
                     </div>
                 ) : (
                     <div className="space-y-2.5 text-xs text-gray-600 dark:text-gray-300">
                         <p className="leading-relaxed">
-                            当前未检测到运行中的 Claude Desktop，将直接对目标可执行文件进行微创注入。
+                            {t("proxy.agent_settings.modals.patch_normal_detected", { defaultValue: "当前未检测到运行中的 Claude Desktop，将直接对目标可执行文件进行微创注入。" })}
                         </p>
                         <div className="p-2.5 bg-purple-50 dark:bg-purple-950/30 rounded-lg border border-purple-200 dark:border-purple-800/40 text-purple-900 dark:text-purple-200 space-y-1">
                             <div className="font-semibold flex items-center gap-1.5">
                                 <Sparkles size={14} className="shrink-0 text-purple-600 dark:text-purple-400" />
-                                <span>8k 深度归档微创等长补丁</span>
+                                <span>{t("proxy.agent_settings.modals.patch_feature_title", { defaultValue: "8k 深度归档微创等长补丁" })}</span>
                             </div>
                             <p className="text-[11px] leading-relaxed">
-                                保留最新 8k 活跃消息上下文，超出历史 100% 浓缩归档，压缩率突破 60%+。系统将自动创建 .bak 安全备份，支持随时一键还原。
+                                {t("proxy.agent_settings.modals.patch_feature_desc", { defaultValue: "保留最新 8k 活跃消息上下文，超出历史 100% 浓缩归档，压缩率突破 60%+。系统将自动创建 .bak 安全备份，支持随时一键还原。" })}
                             </p>
                         </div>
                     </div>

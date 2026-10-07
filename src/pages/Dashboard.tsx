@@ -623,13 +623,13 @@ function Dashboard() {
                                 {quotaView === '5h' && stats.gemini.cappedCount > 0 && stats.gemini.zeroWeeklyCount === 0 && (
                                     <div className="text-[10px] text-amber-600 dark:text-amber-400 mt-1.5 font-medium flex items-center gap-1">
                                         <AlertTriangle className="w-3 h-3 shrink-0" />
-                                        <span>{stats.gemini.cappedCount} 个账号 5H 上限受到周配额压制</span>
+                                        <span>{t('dashboard.capped_by_weekly_warning', { count: stats.gemini.cappedCount })}</span>
                                     </div>
                                 )}
                                 {quotaView === 'weekly' && stats.gemini.coolingCount > 0 && (
                                     <div className="text-[10px] text-blue-600 dark:text-blue-400 mt-1.5 font-medium flex items-center gap-1">
                                         <Clock className="w-3 h-3 shrink-0" />
-                                        <span>{stats.gemini.coolingCount} 个账号当前处于 5H 冷却冻结中</span>
+                                        <span>{t('dashboard.cooling_5h_warning', { count: stats.gemini.coolingCount })}</span>
                                     </div>
                                 )}
                             </div>
@@ -683,13 +683,13 @@ function Dashboard() {
                                 {quotaView === '5h' && stats.geminiImage.cappedCount > 0 && stats.geminiImage.zeroWeeklyCount === 0 && (
                                     <div className="text-[10px] text-amber-600 dark:text-amber-400 mt-1.5 font-medium flex items-center gap-1">
                                         <AlertTriangle className="w-3 h-3 shrink-0" />
-                                        <span>{stats.geminiImage.cappedCount} 个账号 5H 上限受到周配额压制</span>
+                                        <span>{t('dashboard.capped_by_weekly_warning', { count: stats.geminiImage.cappedCount })}</span>
                                     </div>
                                 )}
                                 {quotaView === 'weekly' && stats.geminiImage.coolingCount > 0 && (
                                     <div className="text-[10px] text-blue-600 dark:text-blue-400 mt-1.5 font-medium flex items-center gap-1">
                                         <Clock className="w-3 h-3 shrink-0" />
-                                        <span>{stats.geminiImage.coolingCount} 个账号当前处于 5H 冷却冻结中</span>
+                                        <span>{t('dashboard.cooling_5h_warning', { count: stats.geminiImage.coolingCount })}</span>
                                     </div>
                                 )}
                             </div>
@@ -743,13 +743,13 @@ function Dashboard() {
                                 {quotaView === '5h' && stats.claude.cappedCount > 0 && stats.claude.zeroWeeklyCount === 0 && (
                                     <div className="text-[10px] text-amber-600 dark:text-amber-400 mt-1.5 font-medium flex items-center gap-1">
                                         <AlertTriangle className="w-3 h-3 shrink-0" />
-                                        <span>{stats.claude.cappedCount} 个账号 5H 上限受到周配额压制</span>
+                                        <span>{t('dashboard.capped_by_weekly_warning', { count: stats.claude.cappedCount })}</span>
                                     </div>
                                 )}
                                 {quotaView === 'weekly' && stats.claude.coolingCount > 0 && (
                                     <div className="text-[10px] text-blue-600 dark:text-blue-400 mt-1.5 font-medium flex items-center gap-1">
                                         <Clock className="w-3 h-3 shrink-0" />
-                                        <span>{stats.claude.coolingCount} 个账号当前处于 5H 冷却冻结中</span>
+                                        <span>{t('dashboard.cooling_5h_warning', { count: stats.claude.coolingCount })}</span>
                                     </div>
                                 )}
                             </div>
