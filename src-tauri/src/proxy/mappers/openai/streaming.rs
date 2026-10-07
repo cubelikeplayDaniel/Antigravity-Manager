@@ -106,12 +106,15 @@ where
 
         let mut heartbeat_interval = tokio::time::interval(std::time::Duration::from_secs(3));
         heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut last_activity = tokio::time::Instant::now();
+        const IDLE_TIMEOUT_SECS: u64 = 45;
 
         loop {
             tokio::select! {
                 item = gemini_stream.next() => {
                     match item {
                         Some(Ok(bytes)) => {
+                            last_activity = tokio::time::Instant::now();
                             buffer.extend_from_slice(&bytes);
                             while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
                                 let line_raw = buffer.split_to(pos + 1);
@@ -358,6 +361,35 @@ where
                     }
                 }
                 _ = heartbeat_interval.tick() => {
+                    if last_activity.elapsed() >= std::time::Duration::from_secs(IDLE_TIMEOUT_SECS) {
+                        let report = report_stream_error(
+                            "openai",
+                            "create_openai_sse_stream_with_anchor",
+                            &"stream idle timeout",
+                            format!(
+                                "model={} session={} messages={} idle_secs={}",
+                                model,
+                                session_id,
+                                message_count,
+                                IDLE_TIMEOUT_SECS
+                            ),
+                        );
+                        tracing::warn!(
+                            "[OpenAI-SSE] Stream idle timeout after {}s (model={})",
+                            IDLE_TIMEOUT_SECS,
+                            model
+                        );
+                        yield Ok(Bytes::from(openai_chat_error_frame(
+                            &stream_id,
+                            created_ts,
+                            &model,
+                            "chat.completion.chunk",
+                            &report,
+                        )));
+                        yield Ok(Bytes::from("data: [DONE]\n\n"));
+                        error_occurred = true;
+                        break;
+                    }
                     yield Ok::<Bytes, String>(Bytes::from(": ping\n\n"));
                 }
             }
@@ -429,14 +461,17 @@ where
         let mut final_usage: Option<super::models::OpenAIUsage> = None;
         let mut error_occurred = false;
         let mut thinking_acc = crate::proxy::thinking_store::TurnAccumulator::new();
-        let mut heartbeat_interval = tokio::time::interval(std::time::Duration::from_secs(15));
+        let mut heartbeat_interval = tokio::time::interval(std::time::Duration::from_secs(3));
         heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut last_activity = tokio::time::Instant::now();
+        const IDLE_TIMEOUT_SECS: u64 = 45;
 
         loop {
             tokio::select! {
                 item = gemini_stream.next() => {
                     match item {
                         Some(Ok(bytes)) => {
+                            last_activity = tokio::time::Instant::now();
                             buffer.extend_from_slice(&bytes);
                             while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
                                 let line_raw = buffer.split_to(pos + 1);
@@ -528,7 +563,38 @@ where
                         None => break,
                     }
                 }
-                _ = heartbeat_interval.tick() => { yield Ok::<Bytes, String>(Bytes::from(": ping\n\n")); }
+                _ = heartbeat_interval.tick() => {
+                    if last_activity.elapsed() >= std::time::Duration::from_secs(IDLE_TIMEOUT_SECS) {
+                        let report = report_stream_error(
+                            "openai-legacy",
+                            "create_legacy_sse_stream",
+                            &"stream idle timeout",
+                            format!(
+                                "model={} session={} messages={} idle_secs={}",
+                                model,
+                                session_id,
+                                message_count,
+                                IDLE_TIMEOUT_SECS
+                            ),
+                        );
+                        tracing::warn!(
+                            "[OpenAI-Legacy] Stream idle timeout after {}s (model={})",
+                            IDLE_TIMEOUT_SECS,
+                            model
+                        );
+                        yield Ok::<Bytes, String>(Bytes::from(openai_chat_error_frame(
+                            &stream_id,
+                            created_ts,
+                            &model,
+                            "text_completion",
+                            &report,
+                        )));
+                        yield Ok::<Bytes, String>(Bytes::from("data: [DONE]\n\n"));
+                        error_occurred = true;
+                        break;
+                    }
+                    yield Ok::<Bytes, String>(Bytes::from(": ping\n\n"));
+                }
             }
         }
         thinking_acc.commit(&session_id);
@@ -691,14 +757,17 @@ where
         let mut reasoning_output_index: u32 = 0;
         let mut final_usage: Option<super::models::OpenAIUsage> = None;
         let mut classified_stream_error: Option<StreamErrorReport> = None;
-        let mut heartbeat_interval = tokio::time::interval(std::time::Duration::from_secs(15));
+        let mut heartbeat_interval = tokio::time::interval(std::time::Duration::from_secs(3));
         heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut last_activity = tokio::time::Instant::now();
+        const IDLE_TIMEOUT_SECS: u64 = 45;
 
         loop {
             tokio::select! {
                 item = gemini_stream.next() => {
                     match item {
                         Some(Ok(bytes)) => {
+                            last_activity = tokio::time::Instant::now();
                             buffer.extend_from_slice(&bytes);
                             while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
                                 let line_raw = buffer.split_to(pos + 1);
@@ -1067,6 +1136,37 @@ where
                     }
                 }
                 _ = heartbeat_interval.tick() => {
+                    if last_activity.elapsed() >= std::time::Duration::from_secs(IDLE_TIMEOUT_SECS) {
+                        let report = report_stream_error(
+                            "openai-codex",
+                            "create_openai_codex_stream",
+                            &"stream idle timeout",
+                            format!(
+                                "model={} session={} messages={} idle_secs={}",
+                                model,
+                                session_id,
+                                message_count,
+                                IDLE_TIMEOUT_SECS
+                            ),
+                        );
+                        tracing::warn!(
+                            "[Codex-SSE] Stream idle timeout after {}s (model={})",
+                            IDLE_TIMEOUT_SECS,
+                            model
+                        );
+                        let err_ev = json!({
+                            "type": "error",
+                            "code": report.classified.error_type,
+                            "message": report.client_message(),
+                            "function": report.function,
+                            "call_site": report.call_site(),
+                            "params": report.params,
+                        });
+                        classified_stream_error = Some(report);
+                        let err_ev = inject_seq(err_ev, &mut sequence_number);
+                        yield Ok::<Bytes, String>(codex_sse_frame(&err_ev));
+                        break;
+                    }
                     yield Ok::<Bytes, String>(Bytes::from(": ping\n\n"));
                 }
             }

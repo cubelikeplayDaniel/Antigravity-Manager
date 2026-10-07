@@ -2072,6 +2072,7 @@ pub async fn handle_chat_completions(
     let upstream = state.upstream.clone();
     let image_scheduler = state.image_scheduler.clone();
     let request_timeout = state.request_timeout;
+    let request_start = tokio::time::Instant::now();
     let token_manager = state.token_manager;
     let pool_size = token_manager.len();
     // [FIX #3485] 自适应多账号池与单账号退避最大重试次数 (单账号3次，多账号整池两轮)
@@ -2112,6 +2113,20 @@ pub async fn handle_chat_completions(
         max_attempts,
         retry_credentials.is_some(),
     ) {
+        // [FIX #3621] 全局请求预算硬熔断保护：多账号累计耗时超过配置的 request_timeout 时立刻熔断
+        if used_attempts > 1
+            && request_start.elapsed() >= std::time::Duration::from_secs(request_timeout)
+        {
+            tracing::warn!(
+                "[OpenAI] Global request timeout reached ({}s after {} attempts), terminating retry loop",
+                request_timeout,
+                used_attempts
+            );
+            failure_statuses.record(StatusCode::GATEWAY_TIMEOUT);
+            last_error = format!("Global request timeout reached ({}s)", request_timeout);
+            break;
+        }
+
         let norm_start = std::time::Instant::now();
         // 将 OpenAI 工具转为 Value 数组以便探测联网
         let tools_val: Option<Vec<Value>> = openai_req
@@ -2453,13 +2468,28 @@ pub async fn handle_chat_completions(
                 let mut retry_this_account = false;
 
                 // Loop to skip heartbeats during peek
+                // [FIX #3621] 采用固定截止时间点，杜绝遇到心跳重置 30s 倒计时导致长时间死等
+                let peek_timeout_secs = if config.request_type == "image_gen" {
+                    60
+                } else {
+                    30
+                };
+                let peek_deadline =
+                    tokio::time::Instant::now() + std::time::Duration::from_secs(peek_timeout_secs);
                 loop {
-                    match tokio::time::timeout(
-                        std::time::Duration::from_secs(300),
-                        openai_stream.next(),
-                    )
-                    .await
-                    {
+                    let now = tokio::time::Instant::now();
+                    if now >= peek_deadline {
+                        tracing::warn!(
+                            "[OpenAI] First chunk timeout after {}s during peek, retrying...",
+                            peek_timeout_secs
+                        );
+                        last_error = format!("First chunk timeout after {}s", peek_timeout_secs);
+                        retry_this_account = true;
+                        break;
+                    }
+                    let remaining = peek_deadline - now;
+
+                    match tokio::time::timeout(remaining, openai_stream.next()).await {
                         Ok(Some(Ok(bytes))) => {
                             if bytes.is_empty() {
                                 continue;
@@ -2500,8 +2530,12 @@ pub async fn handle_chat_completions(
                             break;
                         }
                         Err(_) => {
-                            tracing::warn!("[OpenAI] First chunk timeout after 300s, retrying...");
-                            last_error = "First chunk timeout".to_string();
+                            tracing::warn!(
+                                "[OpenAI] First chunk timeout after {}s, retrying...",
+                                peek_timeout_secs
+                            );
+                            last_error =
+                                format!("First chunk timeout after {}s", peek_timeout_secs);
                             retry_this_account = true;
                             break;
                         }
@@ -3887,6 +3921,8 @@ pub async fn handle_completions(
         .filter(|m| m.role == "assistant")
         .count();
 
+    let request_timeout = state.request_timeout;
+    let request_start = tokio::time::Instant::now();
     let upstream = state.upstream.clone();
     let pool_size = token_manager.len();
     // [FIX #3485] 自适应多账号池与单账号退避最大重试次数 (单账号3次，多账号整池两轮)
@@ -3926,6 +3962,20 @@ pub async fn handle_completions(
         max_attempts,
         retry_credentials.is_some(),
     ) {
+        // [FIX #3621] 全局请求预算硬熔断保护：多账号累计耗时超过配置的 request_timeout 时立刻熔断
+        if used_attempts > 1
+            && request_start.elapsed() >= std::time::Duration::from_secs(request_timeout)
+        {
+            tracing::warn!(
+                "[OpenAI-Responses] Global request timeout reached ({}s after {} attempts), terminating retry loop",
+                request_timeout,
+                used_attempts
+            );
+            failure_statuses.record(StatusCode::GATEWAY_TIMEOUT);
+            last_error = format!("Global request timeout reached ({}s)", request_timeout);
+            break;
+        }
+
         let norm_start = std::time::Instant::now();
         // 3. 模型配置解析
         // 将 OpenAI 工具转为 Value 数组以便探测联网
@@ -4237,13 +4287,19 @@ pub async fn handle_completions(
                     let mut first_data_chunk = None;
                     let mut retry_this_account = false;
 
+                    // [FIX #3621] 采用固定截止时间点，杜绝遇到心跳重置倒计时导致长时间死等
+                    let peek_deadline =
+                        tokio::time::Instant::now() + std::time::Duration::from_secs(30);
                     loop {
-                        match tokio::time::timeout(
-                            std::time::Duration::from_secs(60),
-                            openai_stream.next(),
-                        )
-                        .await
-                        {
+                        let now = tokio::time::Instant::now();
+                        if now >= peek_deadline {
+                            last_error = "Timeout waiting for first data (30s)".to_string();
+                            retry_this_account = true;
+                            break;
+                        }
+                        let remaining = peek_deadline - now;
+
+                        match tokio::time::timeout(remaining, openai_stream.next()).await {
                             Ok(Some(Ok(bytes))) => {
                                 if bytes.is_empty() {
                                     continue;
@@ -4377,13 +4433,19 @@ pub async fn handle_completions(
                     // Peek Logic (Repeated for safety/correctness on this stream type)
                     let mut first_data_chunk = None;
                     let mut retry_this_account = false;
+                    // [FIX #3621] 采用固定截止时间点，杜绝遇到心跳重置倒计时导致长时间死等
+                    let peek_deadline =
+                        tokio::time::Instant::now() + std::time::Duration::from_secs(30);
                     loop {
-                        match tokio::time::timeout(
-                            std::time::Duration::from_secs(60),
-                            openai_stream.next(),
-                        )
-                        .await
-                        {
+                        let now = tokio::time::Instant::now();
+                        if now >= peek_deadline {
+                            last_error = "Timeout peek internal (30s)".to_string();
+                            retry_this_account = true;
+                            break;
+                        }
+                        let remaining = peek_deadline - now;
+
+                        match tokio::time::timeout(remaining, openai_stream.next()).await {
                             Ok(Some(Ok(bytes))) => {
                                 if bytes.is_empty() {
                                     continue;

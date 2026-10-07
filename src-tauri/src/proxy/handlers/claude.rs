@@ -1663,6 +1663,8 @@ pub async fn handle_messages(
     let pool_size = token_manager.len();
     // [FIX #3485] 自适应多账号池与单账号退避最大重试次数 (单账号3次，多账号整池两轮)
     let max_attempts = super::common::calculate_max_retry_attempts(pool_size);
+    let request_timeout_secs = state.request_timeout;
+    let request_start = tokio::time::Instant::now();
 
     let mut last_error = String::new();
     let mut retried_without_thinking = false;
@@ -1679,6 +1681,21 @@ pub async fn handle_messages(
     let mut ttft_ms: f64 = 0.0;
 
     for attempt in 0..max_attempts {
+        // [FIX #3621] 全局请求预算硬熔断保护：多账号累计耗时超过配置的 request_timeout 时立刻熔断，杜绝 20+ 分钟轮换假死
+        if attempt > 0
+            && request_start.elapsed() >= std::time::Duration::from_secs(request_timeout_secs)
+        {
+            tracing::warn!(
+                "[{}] 全局请求超时熔断 (已耗时 {}s，历经 {} 次重试)，立即终止账号轮换",
+                trace_id,
+                request_timeout_secs,
+                attempt
+            );
+            last_status = StatusCode::GATEWAY_TIMEOUT;
+            last_error = format!("Global request timeout reached ({}s)", request_timeout_secs);
+            break;
+        }
+
         // [Stage 2 Timing] 中转归一计时起点
         let norm_start = std::time::Instant::now();
 
@@ -2051,11 +2068,28 @@ pub async fn handle_messages(
 
                 // Loop to skip heartbeats during peek
                 let peek_timeout_secs = if is_compaction_request { 180 } else { 30 };
+                // [FIX #3621] 采用固定截止时间点，杜绝遇到心跳 : ping 时刷新重置 30s 倒计时导致的 100s 死等死循环
+                let peek_deadline =
+                    tokio::time::Instant::now() + std::time::Duration::from_secs(peek_timeout_secs);
                 loop {
+                    let now = tokio::time::Instant::now();
+                    if now >= peek_deadline {
+                        tracing::warn!(
+                            "[{}] Total timeout waiting for first data ({}s) during peek, retrying...",
+                            trace_id,
+                            peek_timeout_secs
+                        );
+                        last_error =
+                            format!("Timeout waiting for first data ({}s)", peek_timeout_secs);
+                        retry_this_account = true;
+                        break;
+                    }
+                    let remaining = peek_deadline - now;
+
                     match tokio::time::timeout(
                         // [FIX #Bug1] Reduced from 300s to 30s for normal requests;
                         // Extended to 180s for compaction summary requests due to heavy prompt processing (Fixes #3614).
-                        std::time::Duration::from_secs(peek_timeout_secs),
+                        remaining,
                         claude_stream.next(),
                     )
                     .await
@@ -2608,6 +2642,18 @@ pub async fn handle_messages(
             attempt,
             pool_size,
         );
+
+        // [FIX #3621] 退避前检查全局超时预算，避免在超时后仍然等待退避时长
+        if request_start.elapsed() >= std::time::Duration::from_secs(request_timeout_secs) {
+            tracing::warn!(
+                "[{}] 全局请求超时熔断 (已耗时 {}s)，放弃退避并终止重试",
+                trace_id,
+                request_timeout_secs
+            );
+            last_status = StatusCode::GATEWAY_TIMEOUT;
+            last_error = format!("Global request timeout reached ({}s)", request_timeout_secs);
+            break;
+        }
 
         // 执行退避
         if apply_retry_strategy(
