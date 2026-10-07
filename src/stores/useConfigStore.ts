@@ -1,6 +1,67 @@
 import { create } from 'zustand';
 import { AppConfig } from '../types/config';
 import * as configService from '../services/configService';
+import i18n from '../i18n';
+
+// 规范化语言编码 (兼容方言与区域代码别名)
+export function normalizeLanguageCode(code: string): string {
+    if (!code) return 'en';
+    if (code === 'zh-CN' || code === 'zh-Hans') return 'zh';
+    if (code.startsWith('zh-TW') || code.startsWith('zh-HK') || code.startsWith('zh-Hant')) return 'zh-TW';
+    if (code === 'ms' || code.startsWith('ms-')) return 'my';
+
+    // 泛化支持如 en-US -> en, ja-JP -> ja, pt-BR -> pt 等常见 BCP 47 代码
+    const primary = code.split(/[-_]/)[0].toLowerCase();
+    const supported = ['en', 'zh', 'ja', 'tr', 'vi', 'pt', 'ko', 'ru', 'ar', 'es', 'my'];
+    if (supported.includes(primary)) return primary;
+    return code;
+}
+
+// 竞态隔离与尾随批处理锁：杜绝高频连续操作（如快速连续切换语言、主题或滑块）时后端 I/O 乱序回滚
+let activeSavePromise: Promise<void> | null = null;
+let queuedConfig: AppConfig | null = null;
+let queuedWaiters: Array<{ resolve: () => void; reject: (err: unknown) => void }> = [];
+let saveSequence = 0;
+
+async function flushPersist(config: AppConfig): Promise<void> {
+    await configService.saveConfig(config);
+    const { isTauri } = await import('../utils/env');
+    if (isTauri()) {
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke('set_window_theme', { theme: config.theme }).catch(() => {});
+    }
+}
+
+async function executeSaveQueue(config: AppConfig): Promise<void> {
+    if (activeSavePromise) {
+        queuedConfig = config;
+        return new Promise<void>((resolve, reject) => {
+            queuedWaiters.push({ resolve, reject });
+        });
+    }
+
+    activeSavePromise = (async () => {
+        try {
+            await flushPersist(config);
+        } finally {
+            while (queuedConfig) {
+                const nextConfig = queuedConfig;
+                const waiters = queuedWaiters;
+                queuedConfig = null;
+                queuedWaiters = [];
+                try {
+                    await flushPersist(nextConfig);
+                    waiters.forEach(w => w.resolve());
+                } catch (err) {
+                    waiters.forEach(w => w.reject(err));
+                }
+            }
+            activeSavePromise = null;
+        }
+    })();
+
+    return activeSavePromise;
+}
 
 interface ConfigState {
     config: AppConfig | null;
@@ -35,36 +96,52 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
     },
 
     saveConfig: async (config: AppConfig, silent: boolean = false) => {
-        if (!silent) set({ loading: true, error: null });
+        const currentSeq = ++saveSequence;
+        // 1. 同步立即乐观更新 Zustand store 状态
+        // 确保所有订阅组件与后续读操作即刻获取最新配置，彻底消灭渲染时差与闭包陈旧值
+        set({ config, loading: !silent, error: null });
+
         try {
-            await configService.saveConfig(config);
-            set({ config, loading: false });
-            const { isTauri } = await import('../utils/env');
-            if (isTauri()) {
-                const { invoke } = await import('@tauri-apps/api/core');
-                await invoke('set_window_theme', { theme: config.theme }).catch(() => {
-                });
+            // 2. 串行/尾随有序持久化，杜绝连续点击触发并发写竞态
+            await executeSaveQueue(config);
+            if (currentSeq === saveSequence) {
+                set({ loading: false });
             }
         } catch (error) {
-            set({ error: String(error), loading: false });
+            if (currentSeq === saveSequence) {
+                set({ error: String(error), loading: false });
+            }
             throw error;
         }
     },
 
     updateTheme: async (theme: string) => {
-        const { config } = get();
-        if (!config || config.theme === theme) return;
+        const current = get().config;
+        if (!current || current.theme === theme) return;
 
-        const newConfig = { ...config, theme };
+        const latest = get().config || current;
+        const newConfig = { ...latest, theme };
         await get().saveConfig(newConfig, true);
     },
 
     updateLanguage: async (language: string) => {
-        const { config } = get();
-        if (!config || config.language === language) return;
+        const current = get().config;
+        if (!current) return;
 
-        const newConfig = { ...config, language };
-        await get().saveConfig(newConfig, true);
+        const normalized = normalizeLanguageCode(language);
+        if (current.language === normalized && i18n.language === normalized) return;
+
+        // 1. 同步切换物理布局方向
+        document.documentElement.dir = normalized === 'ar' ? 'rtl' : 'ltr';
+
+        // 2. 同步立即乐观更新 store 内存态并挂载异步落盘任务
+        const latest = get().config || current;
+        const newConfig = { ...latest, language: normalized };
+        const savePromise = get().saveConfig(newConfig, true);
+
+        // 3. 切换 i18n 并等待落盘完成
+        await i18n.changeLanguage(normalized);
+        await savePromise;
     },
 
     toggleShowAllQuotas: () => {

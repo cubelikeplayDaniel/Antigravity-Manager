@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import type { NavItem, Language } from './constants';
 import { isTauri } from '../../utils/env';
 import { useViewStore } from '../../stores/useViewStore';
+import { normalizeLanguageCode } from '../../stores/useConfigStore';
 
 // useClickOutside Hook
 export function useClickOutside(
@@ -32,6 +33,12 @@ interface LanguageDropdownProps {
     className?: string;
 }
 
+// 查找最佳匹配语言项 (基于统一规范化编码匹配并安全回退)
+export function findMatchingLanguage(currentCode: string, languages: Language[]): Language {
+    const normalized = normalizeLanguageCode(currentCode);
+    return languages.find(l => l.code === normalized) || languages.find(l => l.code === 'en') || languages[0];
+}
+
 export function LanguageDropdown({
     currentLanguage,
     languages,
@@ -43,6 +50,8 @@ export function LanguageDropdown({
     const { t } = useTranslation();
 
     useClickOutside(menuRef, () => setIsOpen(false));
+
+    const activeLang = findMatchingLanguage(currentLanguage, languages);
 
     const handleLanguageChange = (langCode: string) => {
         setIsOpen(false);
@@ -57,31 +66,34 @@ export function LanguageDropdown({
                 title={t('settings.general.language')}
             >
                 <span className="text-sm font-bold text-gray-700 dark:text-gray-300">
-                    {languages.find(l => l.code === currentLanguage)?.short || 'EN'}
+                    {activeLang.short}
                 </span>
             </button>
 
             {/* 下拉菜单 (强制右对齐并限制在视口内，彻底解决向右溢出被窗口边缘遮蔽的问题) */}
             {isOpen && (
                 <div className="absolute right-0 mt-2 w-36 bg-white dark:bg-base-200 rounded-xl shadow-xl border border-gray-100 dark:border-base-100 py-1 overflow-hidden animate-in fade-in zoom-in-95 duration-200 origin-top-right z-50">
-                    {languages.map((lang) => (
-                        <button
-                            key={lang.code}
-                            onClick={() => handleLanguageChange(lang.code)}
-                            className={`w-full px-4 py-2 text-left text-sm flex items-center justify-between hover:bg-gray-50 dark:hover:bg-base-100 transition-colors ${currentLanguage === lang.code
-                                ? 'text-blue-500 font-medium bg-blue-50 dark:bg-blue-900/10'
-                                : 'text-gray-700 dark:text-gray-300'
-                                }`}
-                        >
-                            <div className="flex items-center gap-3">
-                                <span className="font-mono font-bold w-6">{lang.short}</span>
-                                <span className="text-xs opacity-70">{lang.label}</span>
-                            </div>
-                            {currentLanguage === lang.code && (
-                                <span className="w-1.5 h-1.5 rounded-full bg-blue-500"></span>
-                            )}
-                        </button>
-                    ))}
+                    {languages.map((lang) => {
+                        const isSelected = activeLang.code === lang.code;
+                        return (
+                            <button
+                                key={lang.code}
+                                onClick={() => handleLanguageChange(lang.code)}
+                                className={`w-full px-4 py-2 text-left text-sm flex items-center justify-between hover:bg-gray-50 dark:hover:bg-base-100 transition-colors ${isSelected
+                                    ? 'text-blue-500 font-medium bg-blue-50 dark:bg-blue-900/10'
+                                    : 'text-gray-700 dark:text-gray-300'
+                                    }`}
+                            >
+                                <div className="flex items-center gap-3">
+                                    <span className="font-mono font-bold w-6">{lang.short}</span>
+                                    <span className="text-xs opacity-70">{lang.label}</span>
+                                </div>
+                                {isSelected && (
+                                    <span className="w-1.5 h-1.5 rounded-full bg-blue-500"></span>
+                                )}
+                            </button>
+                        );
+                    })}
                 </div>
             )}
         </div>
@@ -183,6 +195,8 @@ export function MoreDropdown({
 
     useClickOutside(menuRef, () => setIsOpen(false));
 
+    const activeLang = findMatchingLanguage(currentLanguage, languages);
+
     const handleThemeToggle = (event: React.MouseEvent<HTMLButtonElement>) => {
         onThemeToggle(event);
         setIsOpen(false);
@@ -241,24 +255,27 @@ export function MoreDropdown({
                     <div className="my-1 border-t border-gray-100 dark:border-base-100"></div>
 
                     {/* 语言选择 */}
-                    {languages.map((lang) => (
-                        <button
-                            key={lang.code}
-                            onClick={() => handleLanguageChange(lang.code)}
-                            className={`w-full px-4 py-2 text-left text-sm flex items-center justify-between hover:bg-gray-50 dark:hover:bg-base-100 transition-colors ${currentLanguage === lang.code
-                                ? 'text-blue-500 font-medium bg-blue-50 dark:bg-blue-900/10'
-                                : 'text-gray-700 dark:text-gray-300'
-                                }`}
-                        >
-                            <div className="flex items-center gap-2">
-                                <span className="font-mono font-bold text-xs">{lang.short}</span>
-                                <span className="text-xs opacity-70">{lang.label}</span>
-                            </div>
-                            {currentLanguage === lang.code && (
-                                <span className="w-1.5 h-1.5 rounded-full bg-blue-500"></span>
-                            )}
-                        </button>
-                    ))}
+                    {languages.map((lang) => {
+                        const isSelected = activeLang.code === lang.code;
+                        return (
+                            <button
+                                key={lang.code}
+                                onClick={() => handleLanguageChange(lang.code)}
+                                className={`w-full px-4 py-2 text-left text-sm flex items-center justify-between hover:bg-gray-50 dark:hover:bg-base-100 transition-colors ${isSelected
+                                    ? 'text-blue-500 font-medium bg-blue-50 dark:bg-blue-900/10'
+                                    : 'text-gray-700 dark:text-gray-300'
+                                    }`}
+                            >
+                                <div className="flex items-center gap-2">
+                                    <span className="font-mono font-bold text-xs">{lang.short}</span>
+                                    <span className="text-xs opacity-70">{lang.label}</span>
+                                </div>
+                                {isSelected && (
+                                    <span className="w-1.5 h-1.5 rounded-full bg-blue-500"></span>
+                                )}
+                            </button>
+                        );
+                    })}
 
                     {/* 登出按钮 - 仅 Web 模式显示 */}
                     {!isTauri() && (
