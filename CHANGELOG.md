@@ -3,6 +3,13 @@
 > 完整版本历史记录。返回项目主页请查看 [README_ZH.md](README_ZH.md) | [English Changelog](CHANGELOG_EN.md)。
 
 *   **版本演进**:
+    *   **v4.9.7-beta.3 (2026-10-07)**:
+        -   **[语言切换并发写竞态隔离、内存乐观更新与方言规范化匹配] (PR #3620, Fixes #3619, Thanks to @cubelikeplayDaniel)**:
+            -   **串行尾随批处理队列锁 (Coalesced Trailing Persistence Queue)**: 在 `useConfigStore` 中引入 `executeSaveQueue` 批处理等待者模式，并发高频触发时自动合并中间冗余写入，待前序落盘完成后统一尾随持久化最新配置并精确唤醒等待队列，彻底杜绝并发写冲突、脏数据覆盖及虚假报错。 (Thanks to @cubelikeplayDaniel)
+            -   **Zustand 内存态同步乐观更新 (Optimistic UI)**: 在 `saveConfig` 第一步立即同步更新 store 内存态配置，彻底消灭渲染时差与闭包陈旧值；统一收敛 `updateLanguage` 一体化调度物理排版方向（`dir`）、i18n 变更与有序持久化。 (Thanks to @cubelikeplayDaniel)
+            -   **解耦启动同步依赖死锁**: 移除 `App.tsx` 中 `useEffect` 对 `i18n.language` 的反向双向依赖，仅保留单向配置灌入，消灭高频连续操作时因状态时差导致的语言瞬时反向回滚与死锁。 (Thanks to @cubelikeplayDaniel)
+            -   **泛化规范化方言映射与导航栏对齐**: 引入 `normalizeLanguageCode` 泛化支持标准 BCP 47 编码别名提取（如 `en-US`、`ja-JP`、`ms`），精准映射 `zh-HK`/`zh-Hant` 为繁体中文，修复 `zh-CN` 状态下右上角图标回退显示 `EN` 及单选指示圆点丢失问题；设置页补齐西班牙语与马来语选项。 (Thanks to @cubelikeplayDaniel)
+
     *   **v4.9.7-beta.2 (2026-10-07)**:
         -   **[Agent 配置与仪表盘全 12 种语言国际化补齐与硬编码清理] (PR #3618, Fixes #3617, Thanks to @cubelikeplayDaniel)**:
             -   **重构 AgentSettings 彻底消灭硬编码中文**: 将特定 Agent 配置面板中的所有中文文案重构为带安全回退值的 `t(...)` 国际化调用，消灭全部硬编码中文。 (Thanks to @cubelikeplayDaniel)

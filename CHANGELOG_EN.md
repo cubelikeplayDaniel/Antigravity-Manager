@@ -3,6 +3,13 @@
 > Complete version history for Antigravity Tools. Return to project home at [README.md](README.md).
 
 *   **Version History**:
+    *   **v4.9.7-beta.3 (2026-10-07)**:
+        -   **[Language Switch Concurrency Queue, Optimistic State Update & Dialect Normalization] (PR #3620, Fixes #3619, Thanks to @cubelikeplayDaniel)**:
+            -   **Coalesced Trailing Persistence Queue**: Implemented `executeSaveQueue` with a queued waiters pattern in `useConfigStore` to coalesce rapid intermediate writes, safely trailing the latest configuration to disk and waking pending callers, eliminating disk write races and dirty overwrites. (Thanks to @cubelikeplayDaniel)
+            -   **Zustand Synchronous Optimistic UI Update**: Synchronously updated memory state in `saveConfig` before asynchronous disk I/O, eliminating closure staleness; consolidated `updateLanguage` to unify text layout direction (`dir`), `i18n.changeLanguage`, and serialized persistence into a single atomic flow. (Thanks to @cubelikeplayDaniel)
+            -   **Decouple Language Sync Effect Deadlock**: Removed bidirectional dependency on `i18n.language` in `App.tsx`'s `useEffect`, preserving unidirectional config-to-i18n synchronization and preventing sudden language rollback or deadlocks during rapid clicking. (Thanks to @cubelikeplayDaniel)
+            -   **Generalized BCP 47 Dialect Normalization & Navbar Alignment**: Added `normalizeLanguageCode` to reliably handle BCP 47 variants (e.g. `en-US`, `ja-JP`, `ms`), correctly mapping `zh-HK`/`zh-Hant` to Traditional Chinese (`zh-TW`); resolved navbar indicator desyncs where `zh-CN` incorrectly displayed `EN` badge; aligned Settings page options for Spanish and Malay. (Thanks to @cubelikeplayDaniel)
+
     *   **v4.9.7-beta.2 (2026-10-07)**:
         -   **[Agent Settings & Dashboard 12-Language i18n Translation & Hardcoded Text Cleanup] (PR #3618, Fixes #3617, Thanks to @cubelikeplayDaniel)**:
             -   **Refactor AgentSettings to Eliminate Hardcoded Strings**: Replaced all hardcoded Chinese strings in the specific Agent settings panel with `t(...)` internationalization calls with fallback defaults. (Thanks to @cubelikeplayDaniel)
