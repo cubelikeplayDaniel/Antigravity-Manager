@@ -1743,12 +1743,13 @@ pub fn finalize_gemini_contents_thinking_with_session(
             // 签名只写在该轮第一个非思考 part 上。Gemini 与 Claude 桌面端都是这个落点。
             if is_in_compaction_history {
                 // 压缩历史轮次治理：
-                // 彻底剥离历史失效签名，缺失签名的工具调用统一以官方哨兵锁定（防 400），
+                // 彻底剥离历史失效签名，Gemini 缺失签名的工具调用统一以官方哨兵锁定（防 400）。
+                // 注意：Claude 模型上游严禁携带 Gemini 哨兵 (避免 400 Invalid signature)，故仅对非 Claude 目标设置哨兵；
                 // 伴随正文/思考块绝对不携带任何签名
                 for p in other_parts.iter_mut() {
                     if let Some(obj) = p.as_object_mut() {
                         obj.remove("thought_signature");
-                        if obj.contains_key("functionCall") {
+                        if !is_claude_turn && obj.contains_key("functionCall") {
                             obj.insert("thoughtSignature".to_string(), json!(SENTINEL_SIGNATURE));
                         } else {
                             obj.remove("thoughtSignature");
@@ -5624,5 +5625,46 @@ mod signature_placement_tests {
 
         let fc_new = &second_input_contents[3]["parts"][1];
         assert_eq!(fc_new["thoughtSignature"], fresh_sig);
+    }
+
+    #[test]
+    fn test_compaction_continuation_claude_target_does_not_invent_sentinel() {
+        let old_sig = "sig_old_gemini_protobuf_signature_test_1234567890";
+        let session_id = "sess_compaction_claude_test";
+
+        let mut first_input_contents = vec![
+            json!({
+                "role": "model",
+                "parts": [
+                    { "text": "Running old tool..." },
+                    {
+                        "functionCall": { "id": "call_old_fc", "name": "shell", "args": {} },
+                        "thoughtSignature": old_sig
+                    }
+                ]
+            }),
+            json!({
+                "role": "user",
+                "parts": [{ "text": "This session is being continued from a previous conversation that ran out of context." }]
+            }),
+            json!({
+                "role": "user",
+                "parts": [{ "text": "Continue next step" }]
+            }),
+        ];
+
+        finalize_gemini_contents_thinking_with_session(
+            &mut first_input_contents,
+            true,
+            Some("claude-3-7-sonnet"),
+            Some(session_id),
+        );
+
+        // 验证：Claude 目标下，历史轮次的旧签名被彻底剥离，绝不发明注入 Gemini 哨兵 (防 400 Invalid signature)
+        let fc0 = &first_input_contents[0]["parts"][1];
+        assert!(fc0.get("thoughtSignature").is_none());
+        assert!(first_input_contents[0]["parts"][0]
+            .get("thoughtSignature")
+            .is_none());
     }
 }

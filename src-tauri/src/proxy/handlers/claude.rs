@@ -1154,6 +1154,9 @@ pub async fn handle_messages(
         is_compaction_header || has_compaction_message || has_compaction_system;
 
     if is_compaction_request {
+        // [Compaction Lifecycle] 彻底作废当前会话预压缩历史签名与思考缓存
+        crate::proxy::thinking_store::clear_session_for_compaction(&session_key);
+
         // [Compaction Immunity Lease] 为该会话发放免死租约，支持并发接续与重试
         let now = std::time::Instant::now();
         COMPACTION_IMMUNITY_LEASES.insert(
@@ -1170,6 +1173,7 @@ pub async fn handle_messages(
         PENDING_COMPACT_SESSIONS.retain(|_, ts| now.duration_since(*ts).as_secs() < 120);
         for entry in PENDING_COMPACT_SESSIONS.iter() {
             let pending_sid = entry.key();
+            crate::proxy::thinking_store::clear_session_for_compaction(pending_sid);
             COMPACTION_IMMUNITY_LEASES.insert(
                 pending_sid.clone(),
                 CompactionImmunityLease {
@@ -1187,7 +1191,7 @@ pub async fn handle_messages(
             state.summary_done = true;
         }
         tracing::info!(
-            "[{}] [Lifecycle] Compaction summary request detected for session {}, issued immunity lease",
+            "[{}] [Lifecycle] Compaction summary request detected for session {}, issued immunity lease and invalidated pre-compaction signatures",
             trace_id, session_key
         );
     }
@@ -1232,6 +1236,7 @@ pub async fn handle_messages(
     // 若检测到已进入接续阶段且并非摘要请求自身，从统一压缩池中回收结算并归入防重放缓存
     if (is_post_compaction || is_continuation_detected) && !is_compaction_request {
         if let Some((_, state)) = COWORK_COMPACT_SESSIONS.remove(&session_key) {
+            crate::proxy::thinking_store::clear_session_for_compaction(&session_key);
             let est_tokens = crate::proxy::pipeline::estimate_tokens(&original_body);
             let saved_tok = state.before_tokens.saturating_sub(est_tokens);
             let saved_k = (saved_tok as f64 / 1000.0).round() as u32;
@@ -1342,6 +1347,7 @@ pub async fn handle_messages(
             COWORK_JUST_COMPACTED_CACHE
                 .insert(session_key.clone(), (now, reply_text.clone(), est_tokens));
             COMPACTION_IMMUNITY_LEASES.remove(&session_key);
+            crate::proxy::thinking_store::clear_session_for_compaction(&session_key);
 
             tracing::info!(
                 "[{}] [Manual-Compact] Successfully compacted for session {} ({} -> {} tokens, saved {}k)! Returning 200 OK",
