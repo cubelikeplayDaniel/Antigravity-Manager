@@ -513,7 +513,7 @@ impl StreamingState {
                 json!({
                     "type": "error",
                     "error": {
-                        "type": "overloaded_error",
+                        "type": "api_error",
                         "message": report.client_message(),
                         "function": report.function,
                         "call_site": report.call_site(),
@@ -1546,7 +1546,7 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_parse_error_emits_standard_overloaded_error() {
+    fn test_handle_parse_error_emits_standard_api_error() {
         let mut state = StreamingState::new();
         // Call handle_parse_error 4 times to exceed threshold (> 3)
         let _ = state.handle_parse_error("invalid chunk 1");
@@ -1557,8 +1557,8 @@ mod tests {
         let output = chunks_to_string(&chunks);
         assert!(output.contains("event: error"), "Must emit error event");
         assert!(
-            output.contains(r#""type":"overloaded_error""#),
-            "Anthropic SSE error type must be standard 'overloaded_error', got: {}",
+            output.contains(r#""type":"api_error""#),
+            "Anthropic SSE error type must be standard 'api_error', got: {}",
             output
         );
         assert!(

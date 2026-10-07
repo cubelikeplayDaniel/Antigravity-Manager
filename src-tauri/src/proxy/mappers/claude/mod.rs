@@ -55,77 +55,109 @@ where
         state.set_client_adapter(client_adapter); // [NEW] Set adapter
         state.set_registered_tool_names(registered_tool_names); // [FIX #MCP] Set tool names
         let mut buffer = BytesMut::new();
-        // [FIX #Bug1] Track consecutive ping timeouts to detect stuck streams
-        let mut consecutive_pings: u32 = 0;
-        const MAX_CONSECUTIVE_PINGS: u32 = 5; // 5 × 20s = 100s max idle before giving up
+        // [FIX #3621] 3s fine-grained downstream SSE heartbeat aligned with PR #3578.
+        // Replaces coarse 20s timeout loop and prevents intermediate proxy/socket timeouts.
+        let mut heartbeat_interval = tokio::time::interval(std::time::Duration::from_secs(3));
+        heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        let mut last_activity = tokio::time::Instant::now();
+        // [FIX #3621] Reduced from 100s (5 pings * 20s) to 45s fail-fast.
+        // Provides ample time for deep thinking models to output first token
+        // while preventing 100s visual freeze on upstream stall.
+        const IDLE_TIMEOUT_SECS: u64 = 45;
+        let mut was_interrupted = false;
+        let mut error_emitted = false;
 
         loop {
-            // [FIX #Bug1] Reduced from 60s to 20s: faster fail-fast on idle streams.
-            // Gemini normally sends data within 5s; 20s is generous without causing 60s delays.
-            let next_chunk = tokio::time::timeout(
-                std::time::Duration::from_secs(20),
-                gemini_stream.next()
-            ).await;
+            tokio::select! {
+                next_chunk = gemini_stream.next() => {
+                    match next_chunk {
+                        Some(chunk_result) => {
+                            last_activity = tokio::time::Instant::now();
+                            match chunk_result {
+                                Ok(chunk) => {
+                                    buffer.extend_from_slice(&chunk);
 
-            match next_chunk {
-                Ok(Some(chunk_result)) => {
-                    // Reset ping counter on any real data
-                    consecutive_pings = 0;
-                    match chunk_result {
-                        Ok(chunk) => {
-                            buffer.extend_from_slice(&chunk);
+                                    while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
+                                        let line_raw = buffer.split_to(pos + 1);
+                                        let line_str = String::from_utf8_lossy(&line_raw);
+                                        let line = line_str.trim();
+                                        if line.is_empty() { continue; }
 
-                            while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
-                                let line_raw = buffer.split_to(pos + 1);
-                                let line_str = String::from_utf8_lossy(&line_raw);
-                                let line = line_str.trim();
-                                if line.is_empty() { continue; }
+                                        if let Some(sse_chunks) = process_sse_line(line, &mut state, &trace_id, &email) {
+                                            for sse_chunk in sse_chunks {
+                                                yield Ok(sse_chunk);
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    let session = state
+                                        .session_id
+                                        .clone()
+                                        .unwrap_or_else(|| "-".to_string());
+                                    let report = crate::proxy::mappers::error_classifier::report_stream_error(
+                                        "claude",
+                                        "create_claude_sse_stream",
+                                        &e,
+                                        format!(
+                                            "trace={} session={} messages={} buffer_bytes={}",
+                                            trace_id,
+                                            session,
+                                            message_count,
+                                            buffer.len()
+                                        ),
+                                    );
+                                    tracing::warn!(
+                                        "[{}] Claude SSE upstream stream chunk error: {}",
+                                        trace_id, report.client_message()
+                                    );
 
-                                if let Some(sse_chunks) = process_sse_line(line, &mut state, &trace_id, &email) {
-                                    for sse_chunk in sse_chunks {
-                                        yield Ok(sse_chunk);
+                                    // [FIX #3621] Interruption Recovery & Exponential Backoff Deadlock Cutoff:
+                                    // If content or thinking has already started, DO NOT emit overloaded_error.
+                                    // Emitting overloaded_error causes Anthropic SDK / Claude Code CLI to enter
+                                    // an exponential backoff retry loop (5 retries * 100s = 20+ minutes freeze).
+                                    // Instead, gracefully break out to finalize the message turn with end_turn.
+                                    if state.has_content {
+                                        tracing::info!(
+                                            "[{}] Stream interrupted after content emitted. Gracefully completing turn to prevent retry deadlock.",
+                                            trace_id
+                                        );
+                                        was_interrupted = true;
+                                        break;
+                                    } else if state.has_thinking {
+                                        tracing::info!(
+                                            "[{}] Stream interrupted after thinking emitted. Forwarding to thinking recovery.",
+                                            trace_id
+                                        );
+                                        was_interrupted = true;
+                                        break;
+                                    } else {
+                                        // No content and no thinking emitted yet:
+                                        // Return standard Anthropic api_error (500) instead of overloaded_error (529),
+                                        // and terminate immediately without sending trailing message_stop.
+                                        let error_json = serde_json::json!({
+                                            "type": "error",
+                                            "error": {
+                                                "type": "api_error",
+                                                "message": report.client_message(),
+                                                "function": report.function,
+                                                "call_site": report.call_site(),
+                                                "params": report.params,
+                                            }
+                                        });
+                                        yield Ok(state.emit("error", error_json));
+                                        error_emitted = true;
+                                        break;
                                     }
                                 }
                             }
                         }
-                        Err(e) => {
-                            let session = state
-                                .session_id
-                                .clone()
-                                .unwrap_or_else(|| "-".to_string());
-                            let report = crate::proxy::mappers::error_classifier::report_stream_error(
-                                "claude",
-                                "create_claude_sse_stream",
-                                &e,
-                                format!(
-                                    "trace={} session={} messages={} buffer_bytes={}",
-                                    trace_id,
-                                    session,
-                                    message_count,
-                                    buffer.len()
-                                ),
-                            );
-                            let error_json = serde_json::json!({
-                                "type": "error",
-                                "error": {
-                                    "type": "overloaded_error",
-                                    "message": report.client_message(),
-                                    "function": report.function,
-                                    "call_site": report.call_site(),
-                                    "params": report.params,
-                                }
-                            });
-                            yield Ok(state.emit("error", error_json));
-                            break;
-                        }
+                        None => break, // Stream 正常结束
                     }
                 }
-                Ok(None) => break, // Stream 正常结束
-                Err(_) => {
-                    // [FIX #Bug1] Timeout - send keepalive ping but track consecutive count
-                    consecutive_pings += 1;
-                    if consecutive_pings >= MAX_CONSECUTIVE_PINGS {
-                        let idle_secs = consecutive_pings * 20;
+                _ = heartbeat_interval.tick() => {
+                    if last_activity.elapsed() >= std::time::Duration::from_secs(IDLE_TIMEOUT_SECS) {
                         let session = state
                             .session_id
                             .clone()
@@ -135,34 +167,58 @@ where
                             "create_claude_sse_stream",
                             &"stream idle timeout",
                             format!(
-                                "trace={} session={} messages={} idle_secs={} consecutive_pings={}",
+                                "trace={} session={} messages={} idle_secs={}",
                                 trace_id,
                                 session,
                                 message_count,
-                                idle_secs,
-                                consecutive_pings
+                                IDLE_TIMEOUT_SECS
                             ),
                         );
-                        let error_json = serde_json::json!({
-                            "type": "error",
-                            "error": {
-                                "type": "overloaded_error",
-                                "message": report.client_message(),
-                                "function": report.function,
-                                "call_site": report.call_site(),
-                                "params": report.params,
-                            }
-                        });
-                        yield Ok(state.emit("error", error_json));
-                        break;
+                        tracing::warn!(
+                            "[{}] Claude SSE stream idle timeout after {}s",
+                            trace_id, IDLE_TIMEOUT_SECS
+                        );
+
+                        if state.has_content {
+                            tracing::info!(
+                                "[{}] Idle timeout after content emitted. Gracefully completing turn to prevent retry deadlock.",
+                                trace_id
+                            );
+                            was_interrupted = true;
+                            break;
+                        } else if state.has_thinking {
+                            tracing::info!(
+                                "[{}] Idle timeout after thinking emitted. Forwarding to thinking recovery.",
+                                trace_id
+                            );
+                            was_interrupted = true;
+                            break;
+                        } else {
+                            let error_json = serde_json::json!({
+                                "type": "error",
+                                "error": {
+                                    "type": "api_error",
+                                    "message": report.client_message(),
+                                    "function": report.function,
+                                    "call_site": report.call_site(),
+                                    "params": report.params,
+                                }
+                            });
+                            yield Ok(state.emit("error", error_json));
+                            error_emitted = true;
+                            break;
+                        }
                     }
-                    tracing::debug!(
-                        "[{}] SSE idle ping #{}/{}",
-                        trace_id, consecutive_pings, MAX_CONSECUTIVE_PINGS
-                    );
                     yield Ok(Bytes::from(": ping\n\n"));
                 }
             }
+        }
+
+        // [FIX #3621] Protocol Guard:
+        // If an error event was emitted, terminate immediately!
+        // Anthropic SSE protocol strictly prohibits emitting message_stop or other events after an error event.
+        if error_emitted {
+            return;
         }
 
         // [FIX #1732] Mandatory Flush remaining buffer on stream termination
@@ -179,6 +235,20 @@ where
                  }
              }
              buffer.clear();
+        }
+
+        // [FIX #3621] Interruption Truncation Notice:
+        // If content generation was interrupted mid-stream, append a clear system notice
+        // to the active text block so the user knows what happened, while finalizing normally.
+        if was_interrupted
+            && state.has_content
+            && state.current_block_type() == crate::proxy::mappers::claude::streaming::BlockType::Text
+        {
+            let truncation_msg = "\n\n[System: Upstream connection interrupted. Response truncated by Antigravity.]";
+            yield Ok(state.emit_delta(
+                "text_delta",
+                serde_json::json!({ "text": truncation_msg }),
+            ));
         }
 
         // [FIX #Bug3] Post-thinking interruption recovery
@@ -658,18 +728,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_claude_sse_stream_error_emits_standard_overloaded_error() {
+    async fn test_create_claude_sse_stream_mid_stream_interruption_gracefully_recovers() {
         use futures::StreamExt;
 
-        // 模拟一个发生网络中断的流
+        // 模拟一个发送了部分内容后发生网络中断的流（如用户遇到的 "1. 萌系 Claude 牛" 之后断流）
         let mock_stream = async_stream::stream! {
-            yield Ok::<_, String>(bytes::Bytes::from("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hello\"}]}}]}\n\n"));
+            yield Ok::<_, String>(bytes::Bytes::from("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hello world\"}]}}]}\n\n"));
             yield Err("error reading a body from connection: connection reset by peer".to_string());
         };
 
         let mut claude_stream = create_claude_sse_stream(
             Box::pin(mock_stream),
-            "trace_err_test".to_string(),
+            "trace_mid_err_test".to_string(),
             "test@example.com".to_string(),
             None,
             false,
@@ -688,25 +758,103 @@ mod tests {
         }
         let output = all_chunks.join("");
 
-        // 必须包含 event: error
+        // 1. 必须包含已输出的内容
+        assert!(
+            output.contains("Hello world"),
+            "Output must contain text emitted before error"
+        );
+
+        // 2. 必须注入截断系统提示
+        assert!(
+            output.contains("Upstream connection interrupted. Response truncated by Antigravity"),
+            "Output must contain graceful truncation notice"
+        );
+
+        // 3. 必须包含正常收尾的 message_delta 和 message_stop，使客户端顺利完成当前轮次
+        assert!(
+            output.contains("event: message_delta"),
+            "Output must contain message_delta"
+        );
+        assert!(
+            output.contains(r#""stop_reason":"end_turn""#),
+            "Output must end with stop_reason end_turn"
+        );
+        assert!(
+            output.contains("event: message_stop"),
+            "Output must contain message_stop"
+        );
+
+        // 4. [FIX #3621 关键断言] 严禁在已输出内容后发送 event: error 或 overloaded_error！
+        // 彻底切断导致 Claude Code CLI / Anthropic SDK 产生 20+ 分钟恶性指数退避重试死锁的根因
+        assert!(
+            !output.contains("event: error"),
+            "Must NOT emit event: error after content was already emitted"
+        );
+        assert!(
+            !output.contains(r#""type":"overloaded_error""#),
+            "Must NOT emit overloaded_error which triggers infinite client retries"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_claude_sse_stream_initial_error_emits_standard_api_error_without_trailing_events(
+    ) {
+        use futures::StreamExt;
+
+        // 模拟一个在发出任何内容前就发生连接错误的流
+        let mock_stream = async_stream::stream! {
+            yield Err::<bytes::Bytes, _>("error connecting to upstream: connection refused".to_string());
+        };
+
+        let mut claude_stream = create_claude_sse_stream(
+            Box::pin(mock_stream),
+            "trace_init_err_test".to_string(),
+            "test@example.com".to_string(),
+            None,
+            false,
+            1_000,
+            None,
+            1,
+            None,
+            Vec::new(),
+        );
+
+        let mut all_chunks = Vec::new();
+        while let Some(result) = claude_stream.next().await {
+            if let Ok(bytes) = result {
+                all_chunks.push(String::from_utf8(bytes.to_vec()).unwrap());
+            }
+        }
+        let output = all_chunks.join("");
+
+        // 1. 必须包含 event: error
         assert!(
             output.contains("event: error"),
             "Output must contain event: error"
         );
 
-        // 关键断言：按照 Anthropic 官方规范，错误类型必须是 overloaded_error
-        // 绝不能是破坏客户端重试状态机的非标 stream_error
+        // 2. 错误类型必须是 Anthropic 标准的 api_error，绝不能是引发恶性重试的 overloaded_error
         assert!(
-            output.contains("\"type\":\"overloaded_error\""),
-            "Error event must contain standard Anthropic type 'overloaded_error', got output: {}",
+            output.contains(r#""type":"api_error""#),
+            "Error event must contain standard Anthropic type 'api_error', got: {}",
             output
         );
         assert!(
-            !output.contains("\"type\":\"stream_error\""),
+            !output.contains(r#""type":"overloaded_error""#),
+            "Error event must not use overloaded_error"
+        );
+        assert!(
+            !output.contains(r#""type":"stream_error""#),
             "Error event must not leak internal non-standard 'stream_error'"
         );
-        // 同时必须保留诊断信息
-        assert!(output.contains("Stream interrupted before completion"));
+
+        // 3. [FIX #3621 关键断言] 发生 error 后必须立即终止，严禁追加发送 message_stop 破坏协议状态机！
+        assert!(
+            !output.contains("event: message_stop"),
+            "Must NOT emit message_stop after event: error"
+        );
+
+        // 4. 同时必须保留诊断信息
         assert!(output.contains("fn=create_claude_sse_stream"));
     }
 }
