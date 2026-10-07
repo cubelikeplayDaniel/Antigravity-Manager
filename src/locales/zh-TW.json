@@ -181,7 +181,12 @@
     "nearest_reset": "最近重設",
     "no_accounts": "帳號池為空",
     "switch_to_pool_view": "切換到全池矩陣視圖",
-    "no_quota_data": "暫無配額資料"
+    "no_quota_data": "暫無配額資料",
+    "capped_by_weekly_warning": "{{count}} 個帳號 5H 上限受到週配額壓制",
+    "cooling_5h_warning": "{{count}} 個帳號當前處於 5H 冷卻凍結中",
+    "view_mode_weighted": "綜合加權",
+    "view_mode_5h": "5H 滾動",
+    "view_mode_weekly": "7天週配額"
   },
   "accounts": {
     "account": "帳號",
@@ -1150,6 +1155,9 @@
       },
       "multimodal_settings": {
         "title": "多模態交互設定 (Multimodal Settings)"
+      },
+      "agent_settings": {
+        "title": "特定 Agent 設定 (Specific Agent Settings)"
       }
     },
     "example": {
@@ -1509,6 +1517,82 @@
       "strategy_memory_desc": "自最新輪次往前回溯計算 Base64 體積，配額內全保留，超出配額的更早舊圖自動剔除。",
       "memory_budget_label": "累積記憶體保鮮上限",
       "memory_budget_hint": "以 Base64 總解碼體積為限額。從最新輪次往前回溯，只要累積在限額內的圖片完整保留，更早超額舊圖剝離降級為佔位符。"
+    },
+    "agent_settings": {
+      "banner_title": "特定 Agent 專屬特性與最佳化治理",
+      "banner_desc": "針對主流智慧體（Claude Desktop、Claude Code、Cursor、Cline 等）的用戶端特異性機制與沙盒限制，提供非侵入式的閘道級排程協同。預設保持純淨線纜，僅在啟用後對指定 Agent 流量精準介入。",
+      "claude_desktop": {
+        "title": "Claude Desktop 系列",
+        "tag": "Cowork 模式專屬",
+        "auto_compact_title": "Cowork 模式自動響應式壓縮自癒 (Auto Reactive Compact)",
+        "auto_compact_desc": "針對 Cowork 模式無法敲擊 /compact 且沙盒旁路本地設定、高頻全螢幕截圖導致上下文迅速膨脹至 200k+ 引發卡頓的頑疾。開啟後，閘道在後台實行雙重確權校驗，就地觸發用戶端內建 Summarizer 自動折疊歷史與截圖，恢復秒級極速響應。預設關閉以完整享受 Gemini 100萬 Token 超長上下文。",
+        "threshold_label": "壓縮觸發門檻 (Tokens)",
+        "threshold_desc": "當 Cowork 會話預估 Token 水位達到此數值時觸發自癒信號。全螢幕截圖按官方規格精準折算（~1600 tokens/張）。",
+        "presets_label": "快捷預設:",
+        "preset_fast": "150,000 (極速)",
+        "preset_agile": "180,000 (敏捷)",
+        "preset_recommended": "200,000 (官方推薦)",
+        "preset_relaxed": "250,000 (寬裕)",
+        "safety_note": "後台雙重安全校驗：① 僅對 tools 顯式包含 mcp__cowork 的桌面會話生效，普通 CLI / Cursor 絕對零誤傷；② 對攜帶 x-stainless-helper: compaction 或 Prompt 包含官方壓縮簽名的總結請求無條件放行，絕對杜絕卡死會話。",
+        "deep_compact_title": "Claude Cowork 深度封存增強 (Deep Compact)",
+        "experimental_tag": "實驗性功能",
+        "deep_compact_desc": "針對 Claude Cowork 模式無法通過 /compact 進行深度封存的底層缺陷。開啟後支援在會話中傳送 ./compact 穿透觸發深度封存，並可配合下方微創補丁注入 8k 深度封存活躍上下文硬預算。後台已與上方自動壓縮無縫互鎖，絕不撞車。",
+        "guide_toggle_open": "使用教學與原理解析",
+        "guide_toggle_close": "收起使用教學",
+        "guide_title": "為什麼需要輸入【./compact】？核心機制與操作指南",
+        "guide_item_1_title": "為什麼不是 /compact？",
+        "guide_item_1_desc": "Claude Desktop 前端缺少命令解析器，直接敲 /compact 會被前端誤包裝為未知 Skill 攔截報錯；而在前面加上小圓點輸入 ./compact，前端會將其判定為普通聊天文字放行至閘道。",
+        "guide_item_2_title": "閘道如何智慧捕獲與協同？",
+        "guide_item_2_desc": "8045 閘道在捕獲到 ./compact 時，就地向用戶端協調回送微創自癒假信號，啟用用戶端內建的 Summarizer 進行歷史深度折疊，並在完成後優雅回顯真實節省的 Token 量（如 Compacted conversation · saved 52k tokens）。",
+        "guide_item_3_title": "視覺介面保留 vs 底層物理輕量化：",
+        "guide_item_3_desc": "壓縮後，您在桌面 UI 聊天記錄中依然能完整向上滾動檢視所有歷史討論（對視覺零破壞）；但在底層傳送給大模型處理時，前面的數百輪歷史已被 100% 濃縮為輕量級摘要，徹底釋放 80%~90% 的上下文包袱，恢復秒級響應！",
+        "guide_item_4_title": "自動壓縮與手動深度封存的智慧互鎖：",
+        "guide_item_4_desc": "兩者同時開啟時，閘道在手動 ./compact 期間會自動壓制自動壓縮門限，兩者無縫共生、智慧互鎖，徹底杜絕雙重 400 撞車！",
+        "manual_compact_title": "啟用 ./compact 對話方塊指令穿透",
+        "manual_compact_desc": "開啟後，在 Cowork 任意會話對話方塊中直接傳送 ./compact 即可隨時按需觸發全量歷史折疊壓縮。預設關閉。",
+        "patch_tool_title": "用戶端二進位微創補丁工具 (僅 macOS)",
+        "btn_check_patch": "檢查補丁狀態",
+        "btn_apply_patch": "一鍵注入補丁",
+        "btn_revert_patch": "還原原生",
+        "detected_installations": "檢測到本機安裝:",
+        "custom_path": "自訂路徑:",
+        "custom_path_placeholder": "支援直接將 Claude.app 拖入此處，或點選右側瀏覽",
+        "btn_browse": "瀏覽...",
+        "btn_browse_tooltip": "瀏覽選擇 Claude.app 目錄或執行檔",
+        "browse_title_app": "選擇 Claude.app 應用程式或二進位檔案",
+        "browse_title_dir": "選擇 Claude.app 應用程式目錄",
+        "browse_error_toast": "無法開啟檔案選擇對話方塊: ",
+        "active_path_label": "生效路徑:",
+        "patch_tag_8k": " [8k深度補丁]",
+        "patch_tag_legacy": " [舊版補丁需升級]",
+        "patch_tag_original": " [官方原版]",
+        "toast_manual_enabled": "已成功啟用 ./compact 深度封存增強",
+        "toast_patch_restarted": "已成功注入 8k 深度封存補丁，並已自動重新開啟 Claude！"
+      },
+      "modals": {
+        "risk_title": "啟用 Cowork 壓縮增強 (實驗性)",
+        "risk_confirm": "下一步：檢視用法",
+        "risk_opt1_title": "✨ 僅開啟開關（完全零風險、零侵入）",
+        "risk_opt1_desc": "不修改任何本地軟體。開啟後即可在會話中輸入 ./compact 觸發官方原生折半壓縮（安全釋放 ~40% 上下文）。",
+        "risk_opt2_title": "⚡ 配合補丁（可選，極限深度瘦身）",
+        "risk_opt2_desc": "若後續點選注入下方微創補丁，將破除官方 50% 歷史殘留限制，把上下文活躍訊息直接削減到 8k 以下（釋放 85%+）。系統自動隔離備份，隨時一鍵還原。",
+        "guide_title": "使用教學：如何觸發壓縮",
+        "guide_confirm": "我已掌握，立即開啟",
+        "guide_instruction": "在 Claude Cowork 任意對話方塊中直接傳送：",
+        "guide_dot_note": "（必須帶小圓點）",
+        "guide_bullet_1": "• 為什麼帶點：因為直接輸入 /compact 會被桌面攔截，帶點可穿透閘道。",
+        "guide_bullet_2": "• 聊天記錄不丟：UI 介面歷史完整可見，底層自動減負恢復極速響應。",
+        "patch_quit_title": "結束 Claude 並注入",
+        "patch_confirm_title": "是否確認注入",
+        "patch_running_confirm": "結束 Claude 並注入",
+        "patch_normal_confirm": "確認注入",
+        "patch_running_detected": "檢測到 Claude Desktop 用戶端當前正在運行中。",
+        "patch_running_warning_title": "注入前需結束用戶端",
+        "patch_running_warning_desc": "注入補丁需要先結束正在運行的 Claude 用戶端以解除檔案鎖定並載入新二進位檔案。注入完成後，系統將自動為您重新開啟 Claude。",
+        "patch_normal_detected": "當前未檢測到運行中的 Claude Desktop，將直接對目標可執行檔進行微創注入。",
+        "patch_feature_title": "8k 深度封存微創等長補丁",
+        "patch_feature_desc": "保留最新 8k 活躍訊息上下文，超出歷史 100% 濃縮封存，壓縮率突破 60%+。系統將自動建立 .bak 安全備份，支援隨時一鍵還原。"
+      }
     }
   },
   "monitor": {
