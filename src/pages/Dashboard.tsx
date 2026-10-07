@@ -1,4 +1,5 @@
 import { save } from '@tauri-apps/plugin-dialog';
+import { motion } from 'framer-motion';
 import {
     AlertTriangle,
     ArrowRight,
@@ -379,7 +380,11 @@ function Dashboard() {
                 {/* 1. 账号生态健康状态阵列 (4 核心卡片，以风控与配置定生死) */}
                 <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
                     {/* 总账号数 */}
-                    <div className="bg-white dark:bg-base-100 rounded-xl p-4 shadow-sm border border-gray-100 dark:border-base-200">
+                    <motion.div
+                        whileHover={{ y: -2 }}
+                        transition={{ duration: 0.15 }}
+                        className="bg-white dark:bg-base-100 rounded-xl p-4 shadow-sm border border-gray-100 dark:border-base-200 hover:shadow-md transition-shadow"
+                    >
                         <div className="flex items-center justify-between mb-2">
                             <div className="p-1.5 bg-blue-50 dark:bg-blue-900/20 rounded-md">
                                 <Users className="w-4 h-4 text-blue-500 dark:text-blue-400" />
@@ -393,10 +398,14 @@ function Dashboard() {
                         <div className="text-[10px] text-gray-400 dark:text-gray-500 mt-1.5">
                             {t('dashboard.total_accounts_desc', '已录入配置的全部账号')}
                         </div>
-                    </div>
+                    </motion.div>
 
                     {/* 可用账号数 (开启且风控正常，不以额度定生死) */}
-                    <div className="bg-white dark:bg-base-100 rounded-xl p-4 shadow-sm border border-emerald-100 dark:border-emerald-950/40">
+                    <motion.div
+                        whileHover={{ y: -2 }}
+                        transition={{ duration: 0.15 }}
+                        className="bg-white dark:bg-base-100 rounded-xl p-4 shadow-sm border border-emerald-100 dark:border-emerald-950/40 hover:shadow-md transition-shadow"
+                    >
                         <div className="flex items-center justify-between mb-2">
                             <div className="p-1.5 bg-emerald-50 dark:bg-emerald-900/20 rounded-md">
                                 <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
@@ -410,10 +419,14 @@ function Dashboard() {
                         <div className="text-[10px] text-emerald-600/80 dark:text-emerald-400/80 mt-1.5">
                             {t('dashboard.available_accounts_desc', '✓ 开启且状态正常 · 反代服务中')}
                         </div>
-                    </div>
+                    </motion.div>
 
                     {/* 禁用账号数 (手动停用) */}
-                    <div className="bg-white dark:bg-base-100 rounded-xl p-4 shadow-sm border border-gray-100 dark:border-base-200">
+                    <motion.div
+                        whileHover={{ y: -2 }}
+                        transition={{ duration: 0.15 }}
+                        className="bg-white dark:bg-base-100 rounded-xl p-4 shadow-sm border border-gray-100 dark:border-base-200 hover:shadow-md transition-shadow"
+                    >
                         <div className="flex items-center justify-between mb-2">
                             <div className="p-1.5 bg-gray-100 dark:bg-base-300 rounded-md">
                                 <Ban className="w-4 h-4 text-gray-500 dark:text-gray-400" />
@@ -427,10 +440,14 @@ function Dashboard() {
                         <div className="text-[10px] text-gray-400 dark:text-gray-500 mt-1.5">
                             {t('dashboard.disabled_accounts_desc', '手动停用 / 反代已禁用')}
                         </div>
-                    </div>
+                    </motion.div>
 
                     {/* 异常账号数 (风控阻断或403封禁) */}
-                    <div className="bg-white dark:bg-base-100 rounded-xl p-4 shadow-sm border border-gray-100 dark:border-base-200">
+                    <motion.div
+                        whileHover={{ y: -2 }}
+                        transition={{ duration: 0.15 }}
+                        className="bg-white dark:bg-base-100 rounded-xl p-4 shadow-sm border border-gray-100 dark:border-base-200 hover:shadow-md transition-shadow"
+                    >
                         <div className="flex items-center justify-between mb-2">
                             <div className={`p-1.5 rounded-md ${stats.abnormal > 0 ? 'bg-rose-50 dark:bg-rose-900/20' : 'bg-gray-50 dark:bg-base-300'}`}>
                                 <ShieldAlert className={`w-4 h-4 ${stats.abnormal > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-gray-400'}`} />
@@ -447,7 +464,7 @@ function Dashboard() {
                                 : t('dashboard.abnormal_accounts_no_risk', '✓ 零风控异常账号')
                             }
                         </div>
-                    </div>
+                    </motion.div>
                 </div>
 
                 {/* 2. 配额生产力矩阵与显眼的双选胶囊控制器 (Pill Capsule Control) */}
@@ -575,12 +592,16 @@ function Dashboard() {
                     return (
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                             {/* Gemini 文本模型配额 */}
-                            <div className="bg-white dark:bg-base-100 rounded-xl p-4 shadow-sm border border-gray-100 dark:border-base-200 flex flex-col justify-between">
+                            <motion.div
+                                whileHover={{ y: -2 }}
+                                transition={{ duration: 0.15 }}
+                                className="bg-white dark:bg-base-100 rounded-xl p-4 shadow-sm border border-gray-100 dark:border-base-200 flex flex-col justify-between hover:shadow-md transition-shadow group"
+                            >
                                 <div>
                                     <div className="flex items-center justify-between mb-2">
                                         <div className="flex items-center gap-2">
                                             <div className="p-1.5 bg-green-50 dark:bg-green-900/20 rounded-md">
-                                                <Sparkles className="w-4 h-4 text-green-500 dark:text-green-400" />
+                                                <Sparkles className="w-4 h-4 text-green-500 dark:text-green-400 group-hover:scale-105 transition-transform" />
                                             </div>
                                             <span className="text-xs font-bold text-gray-800 dark:text-gray-200">
                                                 {t('dashboard.gemini_available_quota', 'Gemini 可用配额')}
@@ -632,15 +653,19 @@ function Dashboard() {
                                         <span>{t('dashboard.cooling_5h_warning', { count: stats.gemini.coolingCount })}</span>
                                     </div>
                                 )}
-                            </div>
+                            </motion.div>
 
                             {/* Gemini 绘图模型配额 */}
-                            <div className="bg-white dark:bg-base-100 rounded-xl p-4 shadow-sm border border-gray-100 dark:border-base-200 flex flex-col justify-between">
+                            <motion.div
+                                whileHover={{ y: -2 }}
+                                transition={{ duration: 0.15 }}
+                                className="bg-white dark:bg-base-100 rounded-xl p-4 shadow-sm border border-gray-100 dark:border-base-200 flex flex-col justify-between hover:shadow-md transition-shadow group"
+                            >
                                 <div>
                                     <div className="flex items-center justify-between mb-2">
                                         <div className="flex items-center gap-2">
                                             <div className="p-1.5 bg-purple-50 dark:bg-purple-900/20 rounded-md">
-                                                <Sparkles className="w-4 h-4 text-purple-500 dark:text-purple-400" />
+                                                <Sparkles className="w-4 h-4 text-purple-500 dark:text-purple-400 group-hover:scale-105 transition-transform" />
                                             </div>
                                             <span className="text-xs font-bold text-gray-800 dark:text-gray-200">
                                                 {t('dashboard.gemini_image_quota', 'Gemini 绘图配额')}
@@ -692,15 +717,19 @@ function Dashboard() {
                                         <span>{t('dashboard.cooling_5h_warning', { count: stats.geminiImage.coolingCount })}</span>
                                     </div>
                                 )}
-                            </div>
+                            </motion.div>
 
                             {/* Claude 模型配额 */}
-                            <div className="bg-white dark:bg-base-100 rounded-xl p-4 shadow-sm border border-gray-100 dark:border-base-200 flex flex-col justify-between">
+                            <motion.div
+                                whileHover={{ y: -2 }}
+                                transition={{ duration: 0.15 }}
+                                className="bg-white dark:bg-base-100 rounded-xl p-4 shadow-sm border border-gray-100 dark:border-base-200 flex flex-col justify-between hover:shadow-md transition-shadow group"
+                            >
                                 <div>
                                     <div className="flex items-center justify-between mb-2">
                                         <div className="flex items-center gap-2">
                                             <div className="p-1.5 bg-cyan-50 dark:bg-cyan-900/20 rounded-md">
-                                                <Bot className="w-4 h-4 text-cyan-500 dark:text-cyan-400" />
+                                                <Bot className="w-4 h-4 text-cyan-500 dark:text-cyan-400 group-hover:scale-105 transition-transform" />
                                             </div>
                                             <span className="text-xs font-bold text-gray-800 dark:text-gray-200">
                                                 {t('dashboard.claude_available_quota', 'Claude 可用配额')}
@@ -752,7 +781,7 @@ function Dashboard() {
                                         <span>{t('dashboard.cooling_5h_warning', { count: stats.claude.coolingCount })}</span>
                                     </div>
                                 )}
-                            </div>
+                            </motion.div>
                         </div>
                     );
                 })()}
@@ -773,20 +802,26 @@ function Dashboard() {
 
                 {/* 快速链接 */}
                 <div className="grid grid-cols-2 gap-3">
-                    <button
-                        className="bg-indigo-50 dark:bg-indigo-900/20 rounded-lg p-3 shadow-sm border border-indigo-100 dark:border-indigo-900/30 hover:border-indigo-300 dark:hover:border-indigo-700 hover:shadow-md transition-all flex items-center justify-between group"
+                    <motion.button
+                        whileHover={{ y: -1, scale: 1.005 }}
+                        whileTap={{ scale: 0.98 }}
+                        transition={{ duration: 0.15 }}
+                        className="bg-indigo-50 dark:bg-indigo-900/20 rounded-lg p-3 shadow-sm border border-indigo-100 dark:border-indigo-900/30 hover:border-indigo-300 dark:hover:border-indigo-700 hover:shadow-md transition-all flex items-center justify-between group cursor-pointer"
                         onClick={() => navigate('/accounts')}
                     >
                         <span className="text-indigo-700 dark:text-indigo-300 font-medium text-sm">{t('dashboard.view_all_accounts')}</span>
                         <ArrowRight className="w-4 h-4 text-indigo-400 dark:text-indigo-500 group-hover:text-indigo-600 dark:group-hover:text-indigo-300 group-hover:translate-x-1 transition-all" />
-                    </button>
-                    <button
-                        className="bg-purple-50 dark:bg-purple-900/20 rounded-lg p-3 shadow-sm border border-purple-100 dark:border-purple-900/30 hover:border-purple-300 dark:hover:border-purple-700 hover:shadow-md transition-all flex items-center justify-between group"
+                    </motion.button>
+                    <motion.button
+                        whileHover={{ y: -1, scale: 1.005 }}
+                        whileTap={{ scale: 0.98 }}
+                        transition={{ duration: 0.15 }}
+                        className="bg-purple-50 dark:bg-purple-900/20 rounded-lg p-3 shadow-sm border border-purple-100 dark:border-purple-900/30 hover:border-purple-300 dark:hover:border-purple-700 hover:shadow-md transition-all flex items-center justify-between group cursor-pointer"
                         onClick={handleExport}
                     >
                         <span className="text-purple-700 dark:text-purple-300 font-medium text-sm">{t('dashboard.export_data')}</span>
                         <Download className="w-4 h-4 text-purple-400 dark:text-purple-500 group-hover:text-purple-600 dark:group-hover:text-purple-300 transition-all" />
-                    </button>
+                    </motion.button>
                 </div>
             </div>
         </div>

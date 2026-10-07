@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { motion } from 'framer-motion';
 import { ArrowRightLeft, RefreshCw, Trash2, Download, Info, Lock, Ban, Diamond, Gem, Circle, ToggleLeft, ToggleRight, Fingerprint, Sparkles, Tag, X, Check, Clock, Bot, Repeat2, Terminal } from 'lucide-react';
 import { Account, ModelQuota, getAccountTier } from '../../types/account';
 import { cn } from '../../utils/cn';
@@ -161,13 +162,17 @@ function AccountCard({ account, selected, onSelect, isCurrent: propIsCurrent, is
     };
 
     return (
-        <div className={cn(
-            "flex flex-col p-3 rounded-xl border transition-all hover:shadow-md",
-            isCurrent
-                ? "bg-blue-50/30 border-blue-200 dark:bg-blue-900/10 dark:border-blue-900/30"
-                : "bg-white dark:bg-base-100 border-gray-200 dark:border-base-300",
-            (isRefreshing || isDisabled) && "opacity-70"
-        )}>
+        <motion.div
+            whileHover={{ y: -2 }}
+            transition={{ duration: 0.15 }}
+            className={cn(
+                "flex flex-col p-3 rounded-xl border transition-all hover:shadow-md",
+                isCurrent
+                    ? "bg-blue-50/30 border-blue-200 dark:bg-blue-900/10 dark:border-blue-900/30"
+                    : "bg-white dark:bg-base-100 border-gray-200 dark:border-base-300",
+                (isRefreshing || isDisabled) && "opacity-70"
+            )}
+        >
 
             {/* Header: Checkbox + Email + Badges */}
             <div className="flex-none flex items-start gap-3 mb-2">
@@ -449,7 +454,7 @@ function AccountCard({ account, selected, onSelect, isCurrent: propIsCurrent, is
                         )}
                     </button>
                     <button
-                        className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all"
+                        className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg transition-all"
                         onClick={(e) => { e.stopPropagation(); onDelete(); }}
                         title={t('common.delete')}
                     >
@@ -457,7 +462,7 @@ function AccountCard({ account, selected, onSelect, isCurrent: propIsCurrent, is
                     </button>
                 </div>
             </div>
-        </div >
+        </motion.div>
     );
 }
 
