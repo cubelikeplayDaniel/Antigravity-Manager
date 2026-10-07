@@ -202,21 +202,18 @@ fn is_manual_compact_command(request: &ClaudeRequest) -> bool {
 /// 仅精准放行真正的 Cowork 模式（带 mcp__cowork_* / mcp__workspace_* 工具或 local-agent 运行环境）。
 pub fn is_cowork_session(request: &ClaudeRequest, headers: &HeaderMap) -> bool {
     // 1. 显式排除 Claude Code 模式（一票否决权）：
-    // 关键认知：Claude Desktop 的 Cowork 模式底层同样基于 agent-sdk，也会携带 x-app: cli 与 x-claude-code-session-id，
-    // 因此绝不能用这两个通用标头判定 Code 模式！
-    // 真正的 Code 模式专属特征为：包含 mcp__ccd_* 工具前缀、claude-desktop-3p 标识、或系统提示词声明 "You are Claude Code"
+    // 关键认知：Claude Desktop 的 Cowork 模式底层同样基于 agent-sdk，也会携带 x-app: cli、x-claude-code-session-id
+    // 以及通用宿主标头 claude-desktop-3p（代表 3p 嵌入桌面宿主），因此绝不能用这些通用标头判定 Code 模式！
+    // 真正的 Code 模式专属特征为：包含 mcp__ccd_* 工具前缀，或系统提示词显式声明 "You are Claude Code"
     let is_code_mode = request.tools.as_ref().map_or(false, |tools| {
         tools.iter().any(|t| t.get_name().starts_with("mcp__ccd_"))
-    }) || headers.iter().any(|(_, v)| {
-        v.to_str()
-            .map_or(false, |val| val.contains("claude-desktop-3p"))
     }) || request.system.as_ref().map_or(false, |sys| match sys {
         crate::proxy::mappers::claude::models::SystemPrompt::String(s) => {
-            s.contains("claude-desktop-3p") || s.contains("You are Claude Code")
+            s.contains("You are Claude Code")
         }
-        crate::proxy::mappers::claude::models::SystemPrompt::Array(arr) => arr.iter().any(|b| {
-            b.text.contains("claude-desktop-3p") || b.text.contains("You are Claude Code")
-        }),
+        crate::proxy::mappers::claude::models::SystemPrompt::Array(arr) => {
+            arr.iter().any(|b| b.text.contains("You are Claude Code"))
+        }
     });
 
     if is_code_mode {
@@ -4178,23 +4175,45 @@ mod warmup_tests {
         };
         assert!(!is_cowork_session(&req_ccd, &headers_empty));
 
-        // 2. Session with claude-desktop-3p billing header (Claude Code Desktop) -> MUST BE EXCLUDED
-        let req_code_billing = ClaudeRequest {
+        // 2. Real Desktop Cowork session with claude-desktop-3p header and mcp__cowork tools -> MUST BE RECOGNIZED AS COWORK
+        let mut headers_desktop_cowork = HeaderMap::new();
+        headers_desktop_cowork.insert(
+            "user-agent",
+            "claude-cli/2.1.288 (external, claude-desktop-3p, agent-sdk/0.3.288)"
+                .parse()
+                .unwrap(),
+        );
+        let req_desktop_cowork = ClaudeRequest {
             system: Some(SystemPrompt::Array(vec![SystemBlock {
                 block_type: "text".to_string(),
                 text:
                     "x-anthropic-billing-header: cc_version=2.1; cc_entrypoint=claude-desktop-3p;"
                         .to_string(),
             }])),
+            tools: Some(vec![Tool {
+                type_: None,
+                name: Some("mcp__cowork__create_artifact".to_string()),
+                description: None,
+                input_schema: None,
+            }]),
             ..Default::default()
         };
-        assert!(!is_cowork_session(&req_code_billing, &headers_empty));
+        assert!(is_cowork_session(
+            &req_desktop_cowork,
+            &headers_desktop_cowork
+        ));
 
         // 3. Session with "You are Claude Code" system prompt -> MUST BE EXCLUDED
         let req_code_sys = ClaudeRequest {
             system: Some(SystemPrompt::String(
                 "You are Claude Code, Anthropic's official CLI for Claude.".to_string(),
             )),
+            tools: Some(vec![Tool {
+                type_: None,
+                name: Some("mcp__cowork__create_artifact".to_string()),
+                description: None,
+                input_schema: None,
+            }]),
             ..Default::default()
         };
         assert!(!is_cowork_session(&req_code_sys, &headers_empty));
