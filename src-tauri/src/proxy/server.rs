@@ -1887,6 +1887,7 @@ async fn admin_save_config(
         new_config.proxy.experimental.thinking_store_enabled,
         new_config.proxy.experimental.thinking_retention_days,
         Some(new_config.proxy.experimental.thinking_max_memory_turns),
+        Some(new_config.proxy.experimental.enable_global_compaction_strip),
     );
 
     Ok(StatusCode::OK)

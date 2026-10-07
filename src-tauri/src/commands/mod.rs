@@ -448,6 +448,7 @@ pub async fn save_config(
         config.proxy.experimental.thinking_store_enabled,
         config.proxy.experimental.thinking_retention_days,
         Some(config.proxy.experimental.thinking_max_memory_turns),
+        Some(config.proxy.experimental.enable_global_compaction_strip),
     );
 
     // 同步健康检查日志捕获开关
@@ -498,6 +499,7 @@ pub async fn save_config(
             config.proxy.experimental.thinking_store_enabled,
             config.proxy.experimental.thinking_retention_days,
             Some(config.proxy.experimental.thinking_max_memory_turns),
+            Some(config.proxy.experimental.enable_global_compaction_strip),
         );
         // 更新代理池配置
         instance

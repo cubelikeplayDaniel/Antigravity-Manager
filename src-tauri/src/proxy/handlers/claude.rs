@@ -197,6 +197,59 @@ fn is_manual_compact_command(request: &ClaudeRequest) -> bool {
     false
 }
 
+/// 判断当前请求是否属于 Claude Desktop Cowork 专属会话
+/// 关键防护：严格排除 Claude Code 模式（CLI / Desktop Code Tab），防止日常代码工程被误触截断。
+/// 仅精准放行真正的 Cowork 模式（带 mcp__cowork_* / mcp__workspace_* 工具或 local-agent 运行环境）。
+pub fn is_cowork_session(request: &ClaudeRequest, headers: &HeaderMap) -> bool {
+    // 1. 显式排除 Claude Code 模式（一票否决权）：
+    // 关键认知：Claude Desktop 的 Cowork 模式底层同样基于 agent-sdk，也会携带 x-app: cli、x-claude-code-session-id
+    // 以及通用宿主标头 claude-desktop-3p（代表 3p 嵌入桌面宿主），因此绝不能用这些通用标头判定 Code 模式！
+    // 真正的 Code 模式专属特征为：包含 mcp__ccd_* 工具前缀，或系统提示词显式声明 "You are Claude Code"
+    let is_code_mode = request.tools.as_ref().map_or(false, |tools| {
+        tools.iter().any(|t| t.get_name().starts_with("mcp__ccd_"))
+    }) || request.system.as_ref().map_or(false, |sys| match sys {
+        crate::proxy::mappers::claude::models::SystemPrompt::String(s) => {
+            s.contains("You are Claude Code")
+        }
+        crate::proxy::mappers::claude::models::SystemPrompt::Array(arr) => {
+            arr.iter().any(|b| b.text.contains("You are Claude Code"))
+        }
+    });
+
+    if is_code_mode {
+        return false;
+    }
+
+    // 2. 识别真正的 Cowork 会话：
+    // 特征：带有 mcp__cowork_* 或 mcp__workspace_* 专属工具，
+    // 或运行环境为 local-agent / Claude Desktop 内置原生日常工作区
+    let has_cowork_tool = request.tools.as_ref().map_or(false, |tools| {
+        tools.iter().any(|t| {
+            let n = t.get_name();
+            n.starts_with("mcp__cowork") || n.starts_with("mcp__workspace")
+        })
+    });
+
+    let has_cowork_agent = headers
+        .iter()
+        .any(|(_, v)| v.to_str().map_or(false, |val| val.contains("local-agent")))
+        || request.system.as_ref().map_or(false, |sys| match sys {
+            crate::proxy::mappers::claude::models::SystemPrompt::String(s) => {
+                s.contains("local-agent")
+                    || s.contains("operating as an agent inside the Claude desktop app")
+            }
+            crate::proxy::mappers::claude::models::SystemPrompt::Array(arr) => {
+                arr.iter().any(|b| {
+                    b.text.contains("local-agent")
+                        || b.text
+                            .contains("operating as an agent inside the Claude desktop app")
+                })
+            }
+        });
+
+    has_cowork_tool || has_cowork_agent
+}
+
 /// 计算 Claude 请求中非对话历史的固定开销 (Fixed Overhead: System Prompt + Tool 声明)
 /// 用于动态计算可解的目标上限 (target_limit = max(fixed_overhead + 15000, 35000))
 fn calculate_claude_fixed_overhead(request: &ClaudeRequest) -> u32 {
@@ -226,12 +279,44 @@ fn calculate_claude_fixed_overhead(request: &ClaudeRequest) -> u32 {
             let schema_len = tool
                 .input_schema
                 .as_ref()
-                .map(crate::proxy::pipeline::estimator::estimate_tokens)
+                .map(|s| {
+                    crate::proxy::pipeline::estimator::estimate_tokens_from_str(&s.to_string())
+                })
                 .unwrap_or(0);
             overhead += name_len + desc_len + schema_len + 30;
         }
     }
     overhead
+}
+
+/// 计算 Cowork 响应式压缩时抛出 400 假限额的最优参数 (report_tokens, target_limit)
+///
+/// ### 算法原理（基于对 Claude Desktop 内核 bundle 的反编译逆向分析）：
+/// 1. 客户端在收到 400 且匹配 `prompt is too long: (\d+) tokens > (\d+) maximum` 时，
+///    提取 `tokenGap = actual - maximum`。
+/// 2. 客户端进入 `seeded` 压缩流程时，计算 `Ne = tokenGap - last_turn_tokens`。
+/// 3. 客户端调用 `CHt(group_tokens, b-1, Ne)`，从倒数第二轮（h = b-2）向前累加历史轮次的 Token 数，
+///    累加直到总和达到 `Ne`，得到所需轮次数 `g`。
+/// 4. 关键陷阱（二分折半与过度保留）：
+///    - 若 `g >= n - 1`（即所需轮次达到上限），客户端会触发防灾难性清空保底：
+///      `if (g >= n - 1) return Math.max(1, Math.floor(n / 2));`
+///      强制降级为仅裁剪一半历史，导致 547 条消息被硬编码切掉 270 条、保留 277 条（残留高达 145.7k）！
+///    - 客户端在主循环中设置保留组数 `K = 1 + g`，保留尾部的 `K` 组消息（`s.slice(b - K)`），
+///      并将前半部的 `b - K` 组消息送入摘要模型提炼。
+/// 5. 破局之道：
+///    - 若 `tokenGap` 极小（使 `Ne <= 0`，即 `tokenGap <= last_turn_tokens`），
+///      客户端的 `if (Ne > 0)` 分支直接不执行，`K` 保持初始默认值 `1`！
+///    - 此时客户端将仅保留最后 1 组最新用户输入（`s.slice(b - 1)`），将前面所有的历史轮次（`0..b-1`）
+///      完整打包送入摘要请求，单次彻底压降至黄金基线（摘要 ~4k + 1 轮 ~500 + 工具 ~26k ≈ 30.5k tokens）！
+///    - 为安全触发且防止部分校验要求正向 Gap，我们返回极小的正向 Gap（如 500 tokens），
+///      此时 `Ne = 500 - last_turn_tokens <= 0`，既能完美触发 `prompt is too long`，又能让客户端
+///      跳过 `CHt` 的尾部膨胀，平滑保留 1 轮最新输入并压缩全部历史！
+pub fn calculate_cowork_pruning_target(_est_tokens: u32, target_limit: u32) -> (u32, u32) {
+    // 赋予极小的正向差额 (500 tokens)，确保 actual > maximum 严格成立，
+    // 同时使 Ne = tokenGap - last_turn_tokens <= 0，规避 CHt 倒算二分折半陷阱
+    let safe_gap = 500u32;
+    let report_tokens = target_limit.saturating_add(safe_gap);
+    (report_tokens, target_limit)
 }
 
 /// 构造 Anthropic 原生 SSE 流式响应体，回显真实 Compacted 结果
@@ -1056,20 +1141,22 @@ pub async fn handle_messages(
         crate::proxy::mappers::common_utils::is_compaction_request_text(text)
     });
 
-    let has_compaction_system = request.system.as_ref().map_or(false, |sys| {
-        let sys_text = match sys {
-            crate::proxy::mappers::claude::models::SystemPrompt::String(s) => s.as_str(),
-            crate::proxy::mappers::claude::models::SystemPrompt::Array(arr) => {
-                arr.first().map(|b| b.text.as_str()).unwrap_or("")
-            }
-        };
-        crate::proxy::mappers::common_utils::is_compaction_request_text(sys_text)
+    let has_compaction_system = request.system.as_ref().map_or(false, |sys| match sys {
+        crate::proxy::mappers::claude::models::SystemPrompt::String(s) => {
+            crate::proxy::mappers::common_utils::is_compaction_request_text(s)
+        }
+        crate::proxy::mappers::claude::models::SystemPrompt::Array(arr) => arr
+            .iter()
+            .any(|b| crate::proxy::mappers::common_utils::is_compaction_request_text(&b.text)),
     });
 
     let is_compaction_request =
         is_compaction_header || has_compaction_message || has_compaction_system;
 
     if is_compaction_request {
+        // [Compaction Lifecycle] 彻底作废当前会话预压缩历史签名与思考缓存
+        crate::proxy::thinking_store::clear_session_for_compaction(&session_key);
+
         // [Compaction Immunity Lease] 为该会话发放免死租约，支持并发接续与重试
         let now = std::time::Instant::now();
         COMPACTION_IMMUNITY_LEASES.insert(
@@ -1086,6 +1173,7 @@ pub async fn handle_messages(
         PENDING_COMPACT_SESSIONS.retain(|_, ts| now.duration_since(*ts).as_secs() < 120);
         for entry in PENDING_COMPACT_SESSIONS.iter() {
             let pending_sid = entry.key();
+            crate::proxy::thinking_store::clear_session_for_compaction(pending_sid);
             COMPACTION_IMMUNITY_LEASES.insert(
                 pending_sid.clone(),
                 CompactionImmunityLease {
@@ -1103,7 +1191,7 @@ pub async fn handle_messages(
             state.summary_done = true;
         }
         tracing::info!(
-            "[{}] [Lifecycle] Compaction summary request detected for session {}, issued immunity lease",
+            "[{}] [Lifecycle] Compaction summary request detected for session {}, issued immunity lease and invalidated pre-compaction signatures",
             trace_id, session_key
         );
     }
@@ -1138,22 +1226,6 @@ pub async fn handle_messages(
                 COMPACTION_IMMUNITY_LEASES.remove(&session_key);
                 false
             }
-        } else if is_continuation_detected {
-            // 接续标记保底：若检测到接续标记但无活跃租约，发放滑动窗口租约
-            let now = std::time::Instant::now();
-            COMPACTION_IMMUNITY_LEASES.insert(
-                session_key.clone(),
-                CompactionImmunityLease {
-                    created_at: now,
-                    last_touched: now,
-                    consumed: true,
-                },
-            );
-            tracing::info!(
-                "[{}] [Lifecycle] Continuation detected for session {}, minted sliding window lease",
-                trace_id, session_key
-            );
-            true
         } else {
             false
         }
@@ -1164,6 +1236,7 @@ pub async fn handle_messages(
     // 若检测到已进入接续阶段且并非摘要请求自身，从统一压缩池中回收结算并归入防重放缓存
     if (is_post_compaction || is_continuation_detected) && !is_compaction_request {
         if let Some((_, state)) = COWORK_COMPACT_SESSIONS.remove(&session_key) {
+            crate::proxy::thinking_store::clear_session_for_compaction(&session_key);
             let est_tokens = crate::proxy::pipeline::estimate_tokens(&original_body);
             let saved_tok = state.before_tokens.saturating_sub(est_tokens);
             let saved_k = (saved_tok as f64 / 1000.0).round() as u32;
@@ -1274,6 +1347,7 @@ pub async fn handle_messages(
             COWORK_JUST_COMPACTED_CACHE
                 .insert(session_key.clone(), (now, reply_text.clone(), est_tokens));
             COMPACTION_IMMUNITY_LEASES.remove(&session_key);
+            crate::proxy::thinking_store::clear_session_for_compaction(&session_key);
 
             tracing::info!(
                 "[{}] [Manual-Compact] Successfully compacted for session {} ({} -> {} tokens, saved {}k)! Returning 200 OK",
@@ -1360,14 +1434,15 @@ pub async fn handle_messages(
             }
         }
 
-        let report_tokens = est_tokens.max(target_limit + 10_000);
+        let (report_tokens, client_target_limit) =
+            calculate_cowork_pruning_target(est_tokens, target_limit);
         let err_msg = format!(
             "prompt is too long: {} tokens > {} maximum",
-            report_tokens, target_limit
+            report_tokens, client_target_limit
         );
         tracing::warn!(
-            "[{}] [Manual-Compact] Intercepted ./compact for session {} (tokens={}, fixed_overhead={}), responding with 400 fake alarm (gap target: {} tokens) to trigger deep client-side compact",
-            trace_id, session_key, est_tokens, fixed_overhead, target_limit
+            "[{}] [Manual-Compact] Intercepted ./compact for session {} (tokens={}, fixed_overhead={}), responding with 400 fake alarm (client limit: {} tokens) to trigger deep client-side compact",
+            trace_id, session_key, est_tokens, fixed_overhead, client_target_limit
         );
 
         return (
@@ -1389,16 +1464,10 @@ pub async fn handle_messages(
     if experimental.enable_cowork_auto_compact
         && !is_compaction_request
         && !is_post_compaction
-        && !is_continuation_detected
         && !is_manual_compact
         && !is_in_compaction
     {
-        let is_cowork = request.tools.as_ref().map_or(false, |tools| {
-            tools.iter().any(|t| {
-                let n = t.get_name();
-                n.starts_with("mcp__cowork") || n.starts_with("mcp__workspace")
-            })
-        });
+        let is_cowork = is_cowork_session(&request, &headers);
 
         if is_cowork {
             let fixed_overhead = calculate_claude_fixed_overhead(&request);
@@ -1431,10 +1500,11 @@ pub async fn handle_messages(
                     },
                 );
                 PENDING_COMPACT_SESSIONS.insert(session_key.clone(), now);
-                let report_tokens = est_tokens.max(target_limit + 10_000);
+                let (report_tokens, client_target_limit) =
+                    calculate_cowork_pruning_target(est_tokens, target_limit);
                 let err_msg = format!(
                     "prompt is too long: {} tokens > {} maximum",
-                    report_tokens, target_limit
+                    report_tokens, client_target_limit
                 );
                 return (
                     StatusCode::BAD_REQUEST,
@@ -1980,12 +2050,12 @@ pub async fn handle_messages(
                 let mut retry_this_account = false;
 
                 // Loop to skip heartbeats during peek
+                let peek_timeout_secs = if is_compaction_request { 180 } else { 30 };
                 loop {
                     match tokio::time::timeout(
-                        // [FIX #Bug1] Reduced from 300s to 30s.
-                        // Gemini sends first chunk within 5s normally; 30s allows for retries
-                        // without causing the 5-minute hang users observed.
-                        std::time::Duration::from_secs(30),
+                        // [FIX #Bug1] Reduced from 300s to 30s for normal requests;
+                        // Extended to 180s for compaction summary requests due to heavy prompt processing (Fixes #3614).
+                        std::time::Duration::from_secs(peek_timeout_secs),
                         claude_stream.next(),
                     )
                     .await
@@ -2040,10 +2110,12 @@ pub async fn handle_messages(
                         }
                         Err(_) => {
                             tracing::warn!(
-                                "[{}] Timeout waiting for first data (30s), retrying...",
-                                trace_id
+                                "[{}] Timeout waiting for first data ({}s), retrying...",
+                                trace_id,
+                                peek_timeout_secs
                             );
-                            last_error = "Timeout waiting for first data".to_string();
+                            last_error =
+                                format!("Timeout waiting for first data ({}s)", peek_timeout_secs);
                             retry_this_account = true;
                             break;
                         }
@@ -3962,5 +4034,384 @@ mod warmup_tests {
 
         // Clean up
         COWORK_JUST_COMPACTED_CACHE.remove(&session_key);
+    }
+
+    #[test]
+    fn test_cowork_auto_compact_triggers_with_tool_schemas_and_thinking_signatures() {
+        use crate::proxy::mappers::claude::models::{ContentBlock, Message, Tool};
+
+        // Construct realistic Cowork MCP tools with schema and descriptions
+        let mut tools = Vec::new();
+        for i in 0..15 {
+            let schema = serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Absolute file path" },
+                    "content": { "type": "string", "description": "File body text" },
+                    "options": {
+                        "type": "object",
+                        "properties": {
+                            "encoding": { "type": "string" },
+                            "flag": { "type": "string" }
+                        }
+                    }
+                },
+                "required": ["path"]
+            });
+            tools.push(Tool {
+                type_: None,
+                name: Some(format!("mcp__cowork_tool_{}", i)),
+                description: Some(format!(
+                    "Cowork tool {} with extensive capabilities for workspace interaction",
+                    i
+                )),
+                input_schema: Some(schema),
+            });
+        }
+
+        // Construct 20 turns of assistant messages containing thinking blocks with signatures
+        let mut messages = Vec::new();
+        for i in 0..20 {
+            messages.push(Message {
+                role: "user".to_string(),
+                content: crate::proxy::mappers::claude::models::MessageContent::String(format!(
+                    "User turn {}",
+                    i
+                )),
+            });
+            messages.push(Message {
+                role: "assistant".to_string(),
+                content: crate::proxy::mappers::claude::models::MessageContent::Array(vec![
+                    ContentBlock::Thinking {
+                        thinking: "Analyzing problem...".to_string(),
+                        signature: Some("A".repeat(4000)), // ~1000 tokens signature per turn
+                        cache_control: None,
+                    },
+                    ContentBlock::Text {
+                        text: format!("Assistant answer {}", i),
+                    },
+                ]),
+            });
+        }
+
+        let req = ClaudeRequest {
+            model: "claude-3-7-sonnet".to_string(),
+            messages,
+            system: Some(crate::proxy::mappers::claude::models::SystemPrompt::String(
+                "You are Claude with Cowork extension active.".repeat(100),
+            )),
+            tools: Some(tools),
+            ..Default::default()
+        };
+
+        let req_json = serde_json::to_value(&req).expect("serialize ClaudeRequest");
+        let est_tokens = crate::proxy::pipeline::estimate_tokens(&req_json);
+        let fixed_overhead = calculate_claude_fixed_overhead(&req);
+        let target_limit = (fixed_overhead + 15_000).max(35_000);
+        let effective_threshold = calculate_effective_auto_compact_threshold(100_000, target_limit);
+
+        // 20 turns * 4000 chars = 80,000 chars = ~20,000 tokens in signatures alone.
+        // Plus system prompt (~1,100 tokens), plus tools (~3,000 tokens), plus message texts.
+        // Total should comfortably be >= 25,000 tokens.
+        assert!(est_tokens >= 25_000, "est_tokens: {}", est_tokens);
+        assert!(fixed_overhead > 1_500, "fixed_overhead: {}", fixed_overhead);
+
+        // Now test with 100 turns so that context > 100,000 tokens
+        let mut large_messages = Vec::new();
+        for i in 0..60 {
+            large_messages.push(Message {
+                role: "user".to_string(),
+                content: crate::proxy::mappers::claude::models::MessageContent::String(format!(
+                    "User turn {}",
+                    i
+                )),
+            });
+            large_messages.push(Message {
+                role: "assistant".to_string(),
+                content: crate::proxy::mappers::claude::models::MessageContent::Array(vec![
+                    ContentBlock::Thinking {
+                        thinking: "Complex chain of thought exploration...".repeat(20),
+                        signature: Some("A".repeat(6000)), // ~1500 tokens signature per turn
+                        cache_control: None,
+                    },
+                    ContentBlock::Text {
+                        text: format!("Assistant answer {}", i),
+                    },
+                ]),
+            });
+        }
+        let large_req = ClaudeRequest {
+            model: "claude-3-7-sonnet".to_string(),
+            messages: large_messages,
+            system: Some(crate::proxy::mappers::claude::models::SystemPrompt::String(
+                "You are Claude with Cowork extension active.".repeat(1000),
+            )),
+            tools: req.tools.clone(),
+            ..Default::default()
+        };
+        let large_json = serde_json::to_value(&large_req).expect("serialize large ClaudeRequest");
+        let large_est = crate::proxy::pipeline::estimate_tokens(&large_json);
+
+        // Should exceed 100k threshold and trigger compaction gatekeeper
+        assert!(
+            large_est >= effective_threshold && large_est > target_limit,
+            "large_est ({}) must trigger gatekeeper (threshold={}, target_limit={})",
+            large_est,
+            effective_threshold,
+            target_limit
+        );
+    }
+
+    #[test]
+    fn test_is_cowork_session_identifies_cowork_and_excludes_code_mode() {
+        use crate::proxy::mappers::claude::models::{SystemBlock, SystemPrompt, Tool};
+        use axum::http::HeaderMap;
+
+        let headers_empty = HeaderMap::new();
+
+        // 1. Session with mcp__ccd_* tools (Claude Desktop Code tab) -> MUST BE EXCLUDED
+        let req_ccd = ClaudeRequest {
+            tools: Some(vec![Tool {
+                type_: None,
+                name: Some("mcp__ccd_session__spawn_task".to_string()),
+                description: Some("Spawn background task".to_string()),
+                input_schema: None,
+            }]),
+            ..Default::default()
+        };
+        assert!(!is_cowork_session(&req_ccd, &headers_empty));
+
+        // 2. Real Desktop Cowork session with claude-desktop-3p header and mcp__cowork tools -> MUST BE RECOGNIZED AS COWORK
+        let mut headers_desktop_cowork = HeaderMap::new();
+        headers_desktop_cowork.insert(
+            "user-agent",
+            "claude-cli/2.1.288 (external, claude-desktop-3p, agent-sdk/0.3.288)"
+                .parse()
+                .unwrap(),
+        );
+        let req_desktop_cowork = ClaudeRequest {
+            system: Some(SystemPrompt::Array(vec![SystemBlock {
+                block_type: "text".to_string(),
+                text:
+                    "x-anthropic-billing-header: cc_version=2.1; cc_entrypoint=claude-desktop-3p;"
+                        .to_string(),
+            }])),
+            tools: Some(vec![Tool {
+                type_: None,
+                name: Some("mcp__cowork__create_artifact".to_string()),
+                description: None,
+                input_schema: None,
+            }]),
+            ..Default::default()
+        };
+        assert!(is_cowork_session(
+            &req_desktop_cowork,
+            &headers_desktop_cowork
+        ));
+
+        // 3. Session with "You are Claude Code" system prompt -> MUST BE EXCLUDED
+        let req_code_sys = ClaudeRequest {
+            system: Some(SystemPrompt::String(
+                "You are Claude Code, Anthropic's official CLI for Claude.".to_string(),
+            )),
+            tools: Some(vec![Tool {
+                type_: None,
+                name: Some("mcp__cowork__create_artifact".to_string()),
+                description: None,
+                input_schema: None,
+            }]),
+            ..Default::default()
+        };
+        assert!(!is_cowork_session(&req_code_sys, &headers_empty));
+
+        // 4. Session with mcp__cowork_* tools -> MUST BE RECOGNIZED AS COWORK
+        let req_cowork = ClaudeRequest {
+            tools: Some(vec![Tool {
+                type_: None,
+                name: Some("mcp__cowork__present_files".to_string()),
+                description: None,
+                input_schema: None,
+            }]),
+            ..Default::default()
+        };
+        assert!(is_cowork_session(&req_cowork, &headers_empty));
+
+        // 5. Session with mcp__workspace_* tools -> MUST BE RECOGNIZED AS COWORK
+        let req_workspace = ClaudeRequest {
+            tools: Some(vec![Tool {
+                type_: None,
+                name: Some("mcp__workspace__bash".to_string()),
+                description: None,
+                input_schema: None,
+            }]),
+            ..Default::default()
+        };
+        assert!(is_cowork_session(&req_workspace, &headers_empty));
+
+        // 6. Session with local-agent billing header AND x-app: cli header (Exact real Cowork payload!) -> MUST BE RECOGNIZED AS COWORK
+        let mut headers_real_cowork = HeaderMap::new();
+        headers_real_cowork.insert("x-app", "cli".parse().unwrap());
+        headers_real_cowork.insert("x-claude-code-session-id", "ecb97f89".parse().unwrap());
+        let req_local_agent = ClaudeRequest {
+            system: Some(SystemPrompt::Array(vec![
+                SystemBlock {
+                    block_type: "text".to_string(),
+                    text: "x-anthropic-billing-header: cc_version=2.1; cc_entrypoint=local-agent;".to_string(),
+                },
+                SystemBlock {
+                    block_type: "text".to_string(),
+                    text: "<application_details>\nClaude is operating as an agent inside the Claude desktop app.".to_string(),
+                },
+            ])),
+            ..Default::default()
+        };
+        assert!(is_cowork_session(&req_local_agent, &headers_real_cowork));
+
+        // 7. Standard external agent request without cowork markers -> MUST NOT be classified as cowork
+        let req_standard = ClaudeRequest {
+            tools: Some(vec![Tool {
+                type_: None,
+                name: Some("custom_search_tool".to_string()),
+                description: None,
+                input_schema: None,
+            }]),
+            ..Default::default()
+        };
+        assert!(!is_cowork_session(&req_standard, &headers_empty));
+    }
+
+    #[test]
+    fn test_multi_block_system_prompt_compaction_detection() {
+        use crate::proxy::mappers::claude::models::{SystemBlock, SystemPrompt};
+
+        // Multi-block where block 0 is billing header and block 1 contains compaction text
+        let req_compaction = ClaudeRequest {
+            system: Some(SystemPrompt::Array(vec![
+                SystemBlock {
+                    block_type: "text".to_string(),
+                    text: "x-anthropic-billing-header: cc_version=2.1; cc_entrypoint=claude-desktop-3p;".to_string(),
+                },
+                SystemBlock {
+                    block_type: "text".to_string(),
+                    text: "You are tasked with summarizing conversations: write a concise summary of the conversation so far.".to_string(),
+                },
+            ])),
+            ..Default::default()
+        };
+
+        let has_compaction_system = req_compaction
+            .system
+            .as_ref()
+            .map_or(false, |sys| match sys {
+                crate::proxy::mappers::claude::models::SystemPrompt::String(s) => {
+                    crate::proxy::mappers::common_utils::is_compaction_request_text(s)
+                }
+                crate::proxy::mappers::claude::models::SystemPrompt::Array(arr) => {
+                    arr.iter().any(|b| {
+                        crate::proxy::mappers::common_utils::is_compaction_request_text(&b.text)
+                    })
+                }
+            });
+
+        assert!(has_compaction_system);
+    }
+
+    #[test]
+    fn test_post_compaction_continuation_does_not_grant_lifelong_immunity() {
+        use crate::proxy::mappers::claude::models::{Message, MessageContent};
+
+        // 包含接续横幅的消息
+        let req_with_cont = ClaudeRequest {
+            model: "claude-fable-5".to_string(),
+            messages: vec![
+                Message {
+                    role: "user".to_string(),
+                    content: MessageContent::String(
+                        "This session is being continued from a previous conversation that ran out of context".to_string(),
+                    ),
+                },
+                Message {
+                    role: "assistant".to_string(),
+                    content: MessageContent::String("Understood.".to_string()),
+                },
+            ],
+            ..Default::default()
+        };
+
+        // detect_post_compaction_continuation 能识别横幅
+        assert!(detect_post_compaction_continuation(&req_with_cont));
+
+        // 当租约已过期/不存在时，绝不自动续发租约
+        let session_key = "test_expired_continuation_session".to_string();
+        COMPACTION_IMMUNITY_LEASES.remove(&session_key);
+
+        assert!(!COMPACTION_IMMUNITY_LEASES.contains_key(&session_key));
+    }
+
+    #[test]
+    fn test_real_cowork_session_triggers_gatekeeper() {
+        use crate::proxy::mappers::claude::models::{SystemBlock, SystemPrompt, Tool};
+        use axum::http::HeaderMap;
+
+        // 构造真实 Cowork 请求特征：
+        // 1. 包含 local-agent 运行环境与 desktop_app 标头
+        // 2. 底层运行环境附带 x-app: cli 与 x-claude-code-session-id
+        let mut headers = HeaderMap::new();
+        headers.insert("x-app", "cli".parse().unwrap());
+        headers.insert(
+            "x-claude-code-session-id",
+            "ecb97f89-6972-4d75-a141-3898e86aa82a".parse().unwrap(),
+        );
+        headers.insert("anthropic-client-platform", "desktop_app".parse().unwrap());
+        headers.insert(
+            "user-agent",
+            "claude-cli/2.1.288 (external, local-agent, agent-sdk/0.3.288)"
+                .parse()
+                .unwrap(),
+        );
+
+        let req = ClaudeRequest {
+            system: Some(SystemPrompt::Array(vec![
+                SystemBlock {
+                    block_type: "text".to_string(),
+                    text: "x-anthropic-billing-header: cc_version=2.1.288.ad6; cc_entrypoint=local-agent;".to_string(),
+                },
+                SystemBlock {
+                    block_type: "text".to_string(),
+                    text: "<application_details>\nClaude is operating as an agent inside the Claude desktop app. This agent capability is currently in preview, but fully authorized.".to_string(),
+                },
+            ])),
+            tools: Some(vec![Tool {
+                type_: None,
+                name: Some("mcp__workspace__bash".to_string()),
+                description: None,
+                input_schema: None,
+            }]),
+            ..Default::default()
+        };
+
+        // 必须识别为 Cowork，绝不能被 x-app: cli 误杀！
+        assert!(is_cowork_session(&req, &headers));
+    }
+
+    #[test]
+    fn test_calculate_cowork_pruning_target_avoids_binary_fallback() {
+        let est_tokens = 173_683;
+        let target_limit = 41_518;
+
+        let (report_tokens, client_limit) =
+            calculate_cowork_pruning_target(est_tokens, target_limit);
+
+        // 1. 严格满足 actual > maximum
+        assert!(report_tokens > client_limit);
+        assert_eq!(client_limit, target_limit);
+
+        // 2. 差额为受控的小正向 Gap (500 tokens)
+        let gap = report_tokens - client_limit;
+        assert_eq!(gap, 500);
+
+        // 3. 差额足以让客户端 last_turn_tokens (~1000) 使得 Ne = gap - last_turn <= 0，
+        // 从而直接跳过 CHt 倒算二分折半保护，实现深度全量压缩
+        assert!(gap < 1_000);
     }
 }
