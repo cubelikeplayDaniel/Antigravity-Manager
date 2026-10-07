@@ -468,11 +468,7 @@ export const ApiKeyFun: React.FC = () => {
     };
 
     return (
-        <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="h-full flex flex-col p-6 md:p-8 gap-6 overflow-y-auto max-w-[90rem] mx-auto w-full"
-        >
+        <div className="h-full flex flex-col p-6 md:p-8 gap-6 overflow-y-auto max-w-[90rem] mx-auto w-full">
             {/* Header Card */}
             <div
                 className="w-full rounded-2xl border border-blue-100 dark:border-indigo-500/20 p-6 md:p-0 md:px-8 md:h-[140px] flex flex-col md:flex-row items-center justify-between gap-6 shadow-xl relative overflow-hidden shrink-0 bg-gradient-to-r from-blue-50 via-indigo-50/60 to-purple-50 dark:from-indigo-950 dark:via-purple-900/40 dark:to-slate-900 transition-colors duration-300"
@@ -1023,6 +1019,6 @@ export const ApiKeyFun: React.FC = () => {
                 </div>
 
             </div>
-        </motion.div>
+        </div>
     );
 };

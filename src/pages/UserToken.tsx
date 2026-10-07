@@ -226,11 +226,7 @@ const UserToken: React.FC = () => {
     };
 
     return (
-        <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="h-full flex flex-col p-5 gap-5 max-w-7xl mx-auto w-full"
-        >
+        <div className="h-full flex flex-col p-5 gap-5 max-w-7xl mx-auto w-full">
             {/* Header */}
             <div className="flex justify-between items-center">
                 <h1 className="text-2xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
@@ -671,7 +667,7 @@ const UserToken: React.FC = () => {
                     </div>
                 </div>
             )}
-        </motion.div>
+        </div>
     );
 };
 export default UserToken;
