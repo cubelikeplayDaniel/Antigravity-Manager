@@ -1,6 +1,6 @@
 import { Outlet, useLocation } from 'react-router-dom';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import Navbar from '../navbar/Navbar';
 import BackgroundTaskRunner from '../common/BackgroundTaskRunner';
 import ToastContainer from '../common/ToastContainer';
@@ -55,18 +55,15 @@ function Layout() {
             <ToastContainer />
             <Navbar />
             <main className="flex-1 overflow-hidden flex flex-col relative">
-                <AnimatePresence mode="wait" initial={false}>
-                    <motion.div
-                        key={location.pathname}
-                        initial={{ opacity: 0, y: 6 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -6 }}
-                        transition={{ duration: 0.18, ease: 'easeOut' }}
-                        className="h-full w-full flex-1 flex flex-col overflow-hidden"
-                    >
-                        <Outlet />
-                    </motion.div>
-                </AnimatePresence>
+                <motion.div
+                    key={location.pathname}
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.2, ease: 'easeOut' }}
+                    className="h-full w-full flex-1 flex flex-col overflow-hidden"
+                >
+                    <Outlet />
+                </motion.div>
             </main>
         </div>
     );
