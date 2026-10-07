@@ -3,6 +3,7 @@ import { request as invoke } from '../utils/request';
 import { useTranslation } from 'react-i18next';
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts';
 import { Clock, Calendar, CalendarDays, Users, Zap, TrendingUp, RefreshCw, Cpu } from 'lucide-react';
+import { motion } from 'framer-motion';
 
 interface TokenStatsAggregated {
     period: string;
@@ -329,7 +330,12 @@ const TokenStats: React.FC = () => {
     };
 
     return (
-        <div className="h-full w-full overflow-y-auto">
+        <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.2, ease: "easeOut" }}
+            className="h-full w-full overflow-y-auto"
+        >
             <div className="p-5 space-y-4 max-w-7xl mx-auto">
                 <div className="flex items-center justify-between">
                     <h1 className="text-2xl font-bold text-gray-800 dark:text-white flex items-center gap-2">
@@ -815,7 +821,7 @@ const TokenStats: React.FC = () => {
                     )
                 }
             </div>
-        </div>
+        </motion.div>
     );
 };
 

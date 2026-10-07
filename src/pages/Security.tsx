@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Shield, Lock, FileText, Settings, Activity, RefreshCw } from 'lucide-react';
+import { motion } from 'framer-motion';
 import { IpAccessLogs } from '../components/security/IpAccessLogs';
 import { BlacklistManager } from '../components/security/BlacklistManager';
 import { WhitelistManager } from '../components/security/WhitelistManager';
@@ -42,7 +43,12 @@ const Security: React.FC = () => {
     ];
 
     return (
-        <div className="h-full flex flex-col p-5 gap-4 max-w-7xl mx-auto w-full">
+        <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.2, ease: "easeOut" }}
+            className="h-full flex flex-col p-5 gap-4 max-w-7xl mx-auto w-full"
+        >
             <div className="flex items-center justify-between">
                 <h1 className="text-2xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
                     <Shield className="text-blue-500" />
@@ -87,7 +93,7 @@ const Security: React.FC = () => {
             <div className="flex-1 overflow-hidden flex flex-col bg-white dark:bg-base-100 rounded-xl shadow-sm border border-gray-100 dark:border-base-200">
                 {renderContent()}
             </div>
-        </div>
+        </motion.div>
     );
 };
 

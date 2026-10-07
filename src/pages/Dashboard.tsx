@@ -345,10 +345,14 @@ function Dashboard() {
     };
 
     return (
-        <div className="h-full w-full overflow-y-auto">
+        <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.2, ease: "easeOut" }}
+            className="h-full w-full overflow-y-auto"
+        >
             <div
                 className="p-5 space-y-4 max-w-7xl mx-auto"
-                onMouseMove={() => console.log('Mouse moving over Dashboard')}
                 style={{ position: 'relative', zIndex: 1 }}
             >
                 {/* 问候语和操作按钮 */}
@@ -824,7 +828,7 @@ function Dashboard() {
                     </motion.button>
                 </div>
             </div>
-        </div>
+        </motion.div>
     );
 }
 
