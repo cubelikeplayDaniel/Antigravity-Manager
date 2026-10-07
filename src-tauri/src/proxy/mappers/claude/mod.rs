@@ -64,6 +64,11 @@ impl ProtocolStreamHandler for ClaudeStreamHandler {
     fn emit_finalize(&mut self) -> Vec<Bytes> {
         let mut out = Vec::new();
 
+        // 协议守卫：若 message_stop 已发送，严禁追加任何事件帧，防止破坏客户端状态机
+        if self.state.message_stop_sent {
+            return out;
+        }
+
         // [FIX #Bug3] 思考后中断恢复：若已发送思考但未产生任何正文，注入兜底避免客户端死循环
         if self.state.has_thinking && !self.state.has_content {
             tracing::warn!(
@@ -715,5 +720,72 @@ mod tests {
 
         // 4. 同时必须保留诊断信息
         assert!(output.contains("fn=create_claude_sse_stream"));
+    }
+
+    #[tokio::test]
+    async fn test_thinking_only_normal_completion_does_not_emit_content_after_message_stop() {
+        use futures::StreamExt;
+
+        // 模拟一个发送了 Thinking 后正常由 finishReason: "STOP" 结束的流
+        let mock_stream = async_stream::stream! {
+            let chunk_json = serde_json::json!({
+                "candidates": [{
+                    "content": {
+                        "parts": [{ "text": "Deep thinking completed.", "thought": true }]
+                    },
+                    "finishReason": "STOP"
+                }],
+                "modelVersion": "gemini-2.0-flash-thinking",
+                "responseId": "msg_normal_thinking_only",
+                "usageMetadata": {
+                    "promptTokenCount": 10,
+                    "candidatesTokenCount": 50
+                }
+            });
+            yield Ok::<_, String>(bytes::Bytes::from(format!("data: {}\n\n", chunk_json)));
+        };
+
+        let mut claude_stream = create_claude_sse_stream(
+            Box::pin(mock_stream),
+            "trace_normal_thinking_test".to_string(),
+            "test@example.com".to_string(),
+            None,
+            false,
+            1_000,
+            None,
+            1,
+            None,
+            Vec::new(),
+        );
+
+        let mut all_chunks = Vec::new();
+        while let Some(result) = claude_stream.next().await {
+            if let Ok(bytes) = result {
+                all_chunks.push(String::from_utf8(bytes.to_vec()).unwrap());
+            }
+        }
+        let output = all_chunks.join("");
+
+        // 1. 验证包含了 Thinking 内容
+        assert!(output.contains("Deep thinking completed."));
+
+        // 2. 验证 message_stop 之后没有再次追加 content_block_start 或截断恢复提示
+        assert!(
+            !output.contains("Upstream model interrupted after thinking"),
+            "Normal finishReason completion must NOT trigger interruption recovery"
+        );
+
+        // 3. message_stop 必须且仅出现一次
+        let stop_count = output.matches("event: message_stop").count();
+        assert_eq!(stop_count, 1, "Must emit exactly one message_stop event");
+
+        // 4. message_stop 之后不能有任何 content_block_start
+        if let Some(stop_pos) = output.find("event: message_stop") {
+            let after_stop = &output[stop_pos..];
+            assert!(
+                !after_stop.contains("event: content_block_start"),
+                "Must NOT emit any content_block_start after message_stop"
+            );
+        }
     }
 }
