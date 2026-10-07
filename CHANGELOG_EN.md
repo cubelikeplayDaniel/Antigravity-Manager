@@ -3,6 +3,12 @@
 > Complete version history for Antigravity Tools. Return to project home at [README.md](README.md).
 
 *   **Version History**:
+    *   **v4.9.7-beta.2 (2026-10-07)**:
+        -   **[Agent Settings & Dashboard 12-Language i18n Translation & Hardcoded Text Cleanup] (PR #3618, Fixes #3617, Thanks to @cubelikeplayDaniel)**:
+            -   **Refactor AgentSettings to Eliminate Hardcoded Strings**: Replaced all hardcoded Chinese strings in the specific Agent settings panel with `t(...)` internationalization calls with fallback defaults. (Thanks to @cubelikeplayDaniel)
+            -   **Dynamic Interpolation for Dashboard Quota Warning Texts**: Added parameterized dynamic translations for 6 quota suppression and cooldown warnings in the Dashboard, preventing untranslated warnings in multilingual environments. (Thanks to @cubelikeplayDaniel)
+            -   **Full 12-Language Dictionary Injection**: Injected complete `proxy.agent_settings` dictionary trees and missing dashboard/multimodal keys across all 12 supported locales (en, zh, zh-TW, ja, ko, es, ru, pt, tr, vi, my, ar). (Thanks to @cubelikeplayDaniel)
+
     *   **v4.9.7-beta.1 (2026-10-07)**:
         -   **[Cowork Auto-Compaction Decoupling, Binary Pruning Trap Bypass & Context Residual Cleanup] (PR #3615, Fixes #3614, Thanks to @cubelikeplayDaniel)**:
             -   **Precise Cowork vs Code Mode Decoupling**: Removed false-veto rules on generic CLI headers (`x-app: cli`, `x-claude-code-session-id`) and wrapper host headers (`claude-desktop-3p`), resolving missed Cowork compactions in Claude Desktop; tightened Code mode detection strictly to `mcp__ccd_*` tools and `"You are Claude Code"` prompt markers. (Thanks to @cubelikeplayDaniel)

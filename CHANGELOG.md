@@ -3,6 +3,12 @@
 > 完整版本历史记录。返回项目主页请查看 [README_ZH.md](README_ZH.md) | [English Changelog](CHANGELOG_EN.md)。
 
 *   **版本演进**:
+    *   **v4.9.7-beta.2 (2026-10-07)**:
+        -   **[Agent 配置与仪表盘全 12 种语言国际化补齐与硬编码清理] (PR #3618, Fixes #3617, Thanks to @cubelikeplayDaniel)**:
+            -   **重构 AgentSettings 彻底消灭硬编码中文**: 将特定 Agent 配置面板中的所有中文文案重构为带安全回退值的 `t(...)` 国际化调用，消灭全部硬编码中文。 (Thanks to @cubelikeplayDaniel)
+            -   **补齐 Dashboard 警告文案动态插值翻译**: 补齐仪表盘 6 处配额压制与冷却冻结警告文案的插值动态翻译，解决多语言环境下警告提示缺失或混杂中文的问题。 (Thanks to @cubelikeplayDaniel)
+            -   **全量 12 种语言包词条注入**: 为全部 12 种语言包（中文简体、繁体中文、英语、日语、韩语、西班牙语、俄语、葡萄牙语、土耳其语、越南语、缅甸语、阿拉伯语）完整注入 `proxy.agent_settings` 字典树及缺失的 dashboard/multimodal 词条。 (Thanks to @cubelikeplayDaniel)
+
     *   **v4.9.7-beta.1 (2026-10-07)**:
         -   **[Cowork 自动压缩触发与判定解耦、规避二分修剪保底并封堵上下文残留] (PR #3615, Fixes #3614, Thanks to @cubelikeplayDaniel)**:
             -   **精确解耦 Cowork 与 Code 模式判定**: 消除对通用 CLI 标头（`x-app: cli` / `x-claude-code-session-id`）及第三方宿主外壳标头（`claude-desktop-3p`）的一票否决，彻底解决 Claude Desktop 原生 Cowork 请求被误杀为 Code 模式导致漏拦截的问题；严格收敛 Code 模式判定为 `mcp__ccd_*` 专属工具或 `"You are Claude Code"` 声明。 (Thanks to @cubelikeplayDaniel)
