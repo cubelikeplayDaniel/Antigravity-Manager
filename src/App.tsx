@@ -86,7 +86,7 @@ function App() {
       i18n.changeLanguage(targetLang);
       document.documentElement.dir = targetLang === 'ar' ? 'rtl' : 'ltr';
     }
-  }, [config?.language, i18n.language]);
+  }, [config?.language]);
 
   // Listen for tray events
   useEffect(() => {

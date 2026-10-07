@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import type { NavItem, Language } from './constants';
 import { isTauri } from '../../utils/env';
 import { useViewStore } from '../../stores/useViewStore';
+import { normalizeLanguageCode } from '../../stores/useConfigStore';
 
 // useClickOutside Hook
 export function useClickOutside(
@@ -32,16 +33,10 @@ interface LanguageDropdownProps {
     className?: string;
 }
 
-// 查找最佳匹配语言项 (支持 zh-CN, ms/ms-MY, pt-BR 等方言别名回退)
+// 查找最佳匹配语言项 (基于统一规范化编码匹配并安全回退)
 export function findMatchingLanguage(currentCode: string, languages: Language[]): Language {
-    if (!currentCode) return languages.find(l => l.code === 'en') || languages[0];
-    const exact = languages.find(l => l.code === currentCode);
-    if (exact) return exact;
-    if (currentCode === 'zh-CN') return languages.find(l => l.code === 'zh') || languages[0];
-    if (currentCode === 'ms' || currentCode.startsWith('ms-')) return languages.find(l => l.code === 'my') || languages[0];
-    const prefix = languages.find(l => currentCode.startsWith(l.code + '-'));
-    if (prefix) return prefix;
-    return languages.find(l => l.code === 'en') || languages[0];
+    const normalized = normalizeLanguageCode(currentCode);
+    return languages.find(l => l.code === normalized) || languages.find(l => l.code === 'en') || languages[0];
 }
 
 export function LanguageDropdown({

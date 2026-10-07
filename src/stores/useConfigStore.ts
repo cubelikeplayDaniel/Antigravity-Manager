@@ -6,44 +6,61 @@ import i18n from '../i18n';
 // 规范化语言编码 (兼容方言与区域代码别名)
 export function normalizeLanguageCode(code: string): string {
     if (!code) return 'en';
-    if (code === 'zh-CN') return 'zh';
-    if (code === 'ms' || code === 'ms-MY') return 'my';
-    if (code.startsWith('zh-TW') || code.startsWith('zh-HK')) return 'zh-TW';
-    if (code.startsWith('pt-')) return 'pt';
-    if (code.startsWith('es-')) return 'es';
-    if (code.startsWith('vi-')) return 'vi';
+    if (code === 'zh-CN' || code === 'zh-Hans') return 'zh';
+    if (code.startsWith('zh-TW') || code.startsWith('zh-HK') || code.startsWith('zh-Hant')) return 'zh-TW';
+    if (code === 'ms' || code.startsWith('ms-')) return 'my';
+
+    // 泛化支持如 en-US -> en, ja-JP -> ja, pt-BR -> pt 等常见 BCP 47 代码
+    const primary = code.split(/[-_]/)[0].toLowerCase();
+    const supported = ['en', 'zh', 'ja', 'tr', 'vi', 'pt', 'ko', 'ru', 'ar', 'es', 'my'];
+    if (supported.includes(primary)) return primary;
     return code;
 }
 
 // 竞态隔离与尾随批处理锁：杜绝高频连续操作（如快速连续切换语言、主题或滑块）时后端 I/O 乱序回滚
-let isPersisting = false;
-let pendingSaveConfig: AppConfig | null = null;
+let activeSavePromise: Promise<void> | null = null;
+let queuedConfig: AppConfig | null = null;
+let queuedWaiters: Array<{ resolve: () => void; reject: (err: unknown) => void }> = [];
 let saveSequence = 0;
 
+async function flushPersist(config: AppConfig): Promise<void> {
+    await configService.saveConfig(config);
+    const { isTauri } = await import('../utils/env');
+    if (isTauri()) {
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke('set_window_theme', { theme: config.theme }).catch(() => {});
+    }
+}
+
 async function executeSaveQueue(config: AppConfig): Promise<void> {
-    if (isPersisting) {
-        // 当前已有写入在进行中，仅暂存最新的配置，等待当前写入完成后尾随执行
-        pendingSaveConfig = config;
-        return;
+    if (activeSavePromise) {
+        queuedConfig = config;
+        return new Promise<void>((resolve, reject) => {
+            queuedWaiters.push({ resolve, reject });
+        });
     }
 
-    isPersisting = true;
-    try {
-        await configService.saveConfig(config);
-        const { isTauri } = await import('../utils/env');
-        if (isTauri()) {
-            const { invoke } = await import('@tauri-apps/api/core');
-            await invoke('set_window_theme', { theme: config.theme }).catch(() => {});
+    activeSavePromise = (async () => {
+        try {
+            await flushPersist(config);
+        } finally {
+            while (queuedConfig) {
+                const nextConfig = queuedConfig;
+                const waiters = queuedWaiters;
+                queuedConfig = null;
+                queuedWaiters = [];
+                try {
+                    await flushPersist(nextConfig);
+                    waiters.forEach(w => w.resolve());
+                } catch (err) {
+                    waiters.forEach(w => w.reject(err));
+                }
+            }
+            activeSavePromise = null;
         }
-    } finally {
-        isPersisting = false;
-        // 如果在当前写入期间有新的配置更新到达，立即取出最新的尾随配置继续写入
-        if (pendingSaveConfig) {
-            const next = pendingSaveConfig;
-            pendingSaveConfig = null;
-            await executeSaveQueue(next);
-        }
-    }
+    })();
+
+    return activeSavePromise;
 }
 
 interface ConfigState {
@@ -114,14 +131,17 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
         const normalized = normalizeLanguageCode(language);
         if (current.language === normalized && i18n.language === normalized) return;
 
-        // 1. 同步切换物理布局方向与 i18n
+        // 1. 同步切换物理布局方向
         document.documentElement.dir = normalized === 'ar' ? 'rtl' : 'ltr';
-        await i18n.changeLanguage(normalized);
 
-        // 2. 始终基于最新的 store 状态生成新配置并保存
+        // 2. 同步立即乐观更新 store 内存态并挂载异步落盘任务
         const latest = get().config || current;
         const newConfig = { ...latest, language: normalized };
-        await get().saveConfig(newConfig, true);
+        const savePromise = get().saveConfig(newConfig, true);
+
+        // 3. 切换 i18n 并等待落盘完成
+        await i18n.changeLanguage(normalized);
+        await savePromise;
     },
 
     toggleShowAllQuotas: () => {
