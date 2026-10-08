@@ -1100,6 +1100,9 @@
         "clear_success": "생각 블록 저장소를 성공적으로 비웠습니다 (총 {{count}}개 기록 정리)",
         "clear_error": "생각 블록 비우기 실패: {{error}}"
       },
+      "stream_timeout_settings": {
+        "title": "스트리밍 타임아웃 설정 (Stream Timeout Settings)"
+      },
       "thinking_settings": {
         "title": "추론 설정 (Thinking Settings)"
       },
@@ -1115,6 +1118,21 @@
       "agent_settings": {
         "title": "특정 Agent 설정 (Specific Agent Settings)"
       }
+    },
+    "stream_timeouts": {
+      "banner_title": "3단계 스트리밍 그라디언트 타임아웃 및 연결 유지 메커니즘",
+      "banner_desc": "딥 씽킹 모델, 대규모 컨텍스트 Prefill, 긴 대화 압축 요약 및 대용량 파일 생성에 최적화되었습니다. 3단계 독립 타이머와 상시 핑(: ping)을 통해 게이트웨이 끊김, 전환 절벽 오작동, 클라이언트 재시도 루프를 방지합니다.",
+      "ttft_title": "첫 글자 응답 유예 (TTFT)",
+      "default_badge": "기본값: 180s",
+      "ttft_desc": "업스트림 콜드 스타트 대기, 100k+ 토큰 Prefill 및 요약 작업의 최대 허용 시간입니다. 3초마다 연결 유지 핑을 전송합니다.",
+      "transition_title": "상태 전환 유예 (타이머 리셋)",
+      "transition_desc": "추론 완료 후 첫 본문 또는 도구 호출 토큰이 생성되기까지의 유예 시간입니다. 추론 종료 시 자동으로 타이머를 리셋합니다.",
+      "sliding_title": "스트리밍 슬라이딩 타임아웃 (Streaming)",
+      "default_badge_sliding": "기본값: 45s",
+      "sliding_desc": "연속 출력 중 인접 토큰 간 최대 허용 침묵 간격입니다. 비정상 단절 시 안전하게 세션을 마감하여 생성된 출력을 보존합니다.",
+      "toast_reset": "타임아웃 설정을 기본값으로 복원했습니다",
+      "btn_reset": "기본값 복원",
+      "btn_save": "타임아웃 설정 저장"
     },
     "cloudflared": {
       "title": "공개 액세스 (Cloudflared)",

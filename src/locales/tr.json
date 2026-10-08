@@ -1086,6 +1086,9 @@
         "clear_success": "Düşünce deposu başarıyla temizlendi ({{count}} kayıt temizlendi)",
         "clear_error": "Düşünce blokları temizlenemedi: {{error}}"
       },
+      "stream_timeout_settings": {
+        "title": "Akış Zaman Aşımı Ayarları (Stream Timeout Settings)"
+      },
       "thinking_settings": {
         "title": "Düşünme Ayarları (Thinking Settings)"
       },
@@ -1164,6 +1167,21 @@
       "agent_settings": {
         "title": "Özel Agent Ayarları (Specific Agent Settings)"
       }
+    },
+    "stream_timeouts": {
+      "banner_title": "3 Kademeli Akış Zaman Aşımı ve Canlı Tutma Mekanizması",
+      "banner_desc": "Derin düşünme modelleri, büyük bağlamlı Prefill'ler, geçmiş sıkıştırma ve büyük dosya yazımı için tasarlanmıştır. Üç bağımsız aşama ve kesintisiz arka plan sinyali (: ping) ile ağ geçidi kopmalarını ve yeniden deneme döngülerini önler.",
+      "ttft_title": "İlk Yanıt Toleransı (TTFT)",
+      "default_badge": "Varsayılan: 180s",
+      "ttft_desc": "Soğuk başlatma kuyruğu, 100k+ belirteç Prefill ve sıkıştırma özetleme görevlerini kapsar. Bağlantıyı korumak için 3 saniyede bir ping gönderir.",
+      "transition_title": "Geçiş Toleransı (Zamanlayıcı Sıfırlama)",
+      "transition_desc": "Düşünmenin bitişi ile ilk içerik veya araç çağrısı belirtecinin çıkışı arasındaki süre. Düşünme bittiğinde zamanlayıcıyı otomatik olarak sıfırlar.",
+      "sliding_title": "Kayan Akış Zaman Aşımı (Streaming)",
+      "default_badge_sliding": "Varsayılan: 45s",
+      "sliding_desc": "Ardışık belirteçler arasında izin verilen maksimum sessizlik aralığı. Kesinti durumunda oluşturulan çıktıyı koruyarak akışı güvenle tamamlar.",
+      "toast_reset": "Akış zaman aşımı ayarları varsayılanlara sıfırlandı",
+      "btn_reset": "Varsayılana Sıfırla",
+      "btn_save": "Zaman Aşımı Ayarlarını Kaydet"
     },
     "example": {
       "title": "Kullanım Örnekleri",
