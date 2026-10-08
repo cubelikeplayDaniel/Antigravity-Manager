@@ -1881,6 +1881,7 @@ async fn admin_save_config(
     crate::proxy::update_global_system_prompt_config(new_config.proxy.global_system_prompt.clone());
     crate::proxy::update_image_thinking_mode(new_config.proxy.image_thinking_mode.clone());
     crate::proxy::update_multimodal_config(new_config.proxy.multimodal.clone());
+    crate::proxy::update_stream_timeout_config(new_config.proxy.stream_timeouts.clone());
     crate::proxy::config::update_global_audit_config(
         new_config.proxy.experimental.payload_storage_mode.clone(),
         new_config.proxy.experimental.log_retention_days,

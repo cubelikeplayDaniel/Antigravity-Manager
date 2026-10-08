@@ -1100,6 +1100,9 @@
         "clear_success": "思考ブロックストレージを正常にクリアしました（計 {{count}} 件の履歴を削除）",
         "clear_error": "思考ブロックのクリアに失敗しました: {{error}}"
       },
+      "stream_timeout_settings": {
+        "title": "ストリーミングタイムアウト設定 (Stream Timeout Settings)"
+      },
       "thinking_settings": {
         "title": "思考設定 (Thinking Settings)"
       },
@@ -1115,6 +1118,21 @@
       "agent_settings": {
         "title": "特定 Agent 設定 (Specific Agent Settings)"
       }
+    },
+    "stream_timeouts": {
+      "banner_title": "3段階ストリーミング勾配タイムアウト＆キープアライブ機構",
+      "banner_desc": "ディープシンキングモデル、超大規模コンテキストのPrefill、長履歴圧縮要約、大容量コード書き込み向けに設計。3段階の独立計測と常時バックグラウンドキープアライブ（: ping）により、ゲートウェイ切断、状態遷移の誤終了、クライアント再試行ループを徹底防止します。",
+      "ttft_title": "初文字応答猶予 (TTFT)",
+      "default_badge": "デフォルト: 180s",
+      "ttft_desc": "上流のコールドスタート待機、100k+ トークンのPrefill、圧縮要約タスクの最大許容時間。3秒ごとにキープアライブを送信します。",
+      "transition_title": "状態遷移猶予 (エポックリセット)",
+      "transition_desc": "思考完了から最初の本文またはツール呼び出し文字が出力されるまでの猶予期間。思考終了時に自動でタイマーをリセットします。",
+      "sliding_title": "推流スライディングタイムアウト (Streaming)",
+      "default_badge_sliding": "デフォルト: 45s",
+      "sliding_desc": "連続出力中の隣接トークン間の最大許容無応答時間。途中で通信が途絶えた場合、出力を保護して正常にクローズします。",
+      "toast_reset": "タイムアウト設定をデフォルト値に戻しました",
+      "btn_reset": "デフォルトに戻す",
+      "btn_save": "タイムアウト設定を保存"
     },
     "cloudflared": {
       "title": "外部公開 (Cloudflared)",

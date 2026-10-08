@@ -13,10 +13,12 @@ pub mod inbound;
 #[cfg(test)]
 mod official_alignment_tests;
 pub mod policy;
+pub mod stream_lifecycle;
 pub mod usage;
 
 pub use auto_heal::{wrap_stream_with_empty_thinking_auto_heal, ThinkingAutoHealContext};
 pub use estimator::{estimate_tokens, PipelineTokenEstimator};
 pub use inbound::{extract_client_thinking_switch, InboundThinkingPipeline};
 pub use policy::UpstreamClassification;
+pub use stream_lifecycle::{run_stream_lifecycle, ProtocolStreamHandler, StreamLifecycleConfig};
 pub use usage::CanonicalUsage;

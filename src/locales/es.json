@@ -1100,6 +1100,9 @@
         "clear_success": "Almacenamiento de pensamiento vaciado con éxito ({{count}} registros eliminados)",
         "clear_error": "Error al vaciar los bloques de pensamiento: {{error}}"
       },
+      "stream_timeout_settings": {
+        "title": "Configuración de tiempo de espera de streaming (Stream Timeout Settings)"
+      },
       "thinking_settings": {
         "title": "Configuración de razonamiento (Thinking Settings)"
       },
@@ -1115,6 +1118,21 @@
       "agent_settings": {
         "title": "Configuración específica de Agent (Specific Agent Settings)"
       }
+    },
+    "stream_timeouts": {
+      "banner_title": "Tiempo de espera en 3 etapas y mecanismo keepalive",
+      "banner_desc": "Diseñado para modelos de razonamiento profundo, prefills de contexto masivos, compresión de historial y escritura de código extenso. Tres etapas independientes con keepalive continuo (: ping) para evitar desconexiones de gateway y bucles de reintento.",
+      "ttft_title": "Gracia para primer token (TTFT)",
+      "default_badge": "Predeterminado: 180s",
+      "ttft_desc": "Cubre cola de arranque en frío, prefill de más de 100k tokens y tareas de compresión. Envía pings cada 3s para mantener la conexión.",
+      "transition_title": "Gracia de transición (Reinicio de época)",
+      "transition_desc": "Período de gracia entre el fin del razonamiento y el primer token de contenido o llamada de herramienta. Reinicia el temporizador automáticamente al finalizar el razonamiento.",
+      "sliding_title": "Tiempo de espera deslizante (Streaming)",
+      "default_badge_sliding": "Predeterminado: 45s",
+      "sliding_desc": "Intervalo máximo de silencio permitido entre tokens consecutivos. Si se interrumpe, sella ordenadamente la transmisión para preservar el contenido generado.",
+      "toast_reset": "Configuración de tiempos de espera restaurada a valores predeterminados",
+      "btn_reset": "Restaurar valores predeterminados",
+      "btn_save": "Guardar configuración de tiempo de espera"
     },
     "cloudflared": {
       "title": "Acceso Público (Cloudflared)",

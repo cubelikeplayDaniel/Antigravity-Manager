@@ -442,6 +442,7 @@ pub async fn save_config(
     crate::proxy::update_global_system_prompt_config(config.proxy.global_system_prompt.clone());
     crate::proxy::update_image_thinking_mode(config.proxy.image_thinking_mode.clone());
     crate::proxy::update_multimodal_config(config.proxy.multimodal.clone());
+    crate::proxy::update_stream_timeout_config(config.proxy.stream_timeouts.clone());
     crate::proxy::config::update_global_audit_config(
         config.proxy.experimental.payload_storage_mode.clone(),
         config.proxy.experimental.log_retention_days,
@@ -493,6 +494,7 @@ pub async fn save_config(
         // [NEW] 更新全局图像思维模式配置
         crate::proxy::update_image_thinking_mode(config.proxy.image_thinking_mode.clone());
         crate::proxy::update_multimodal_config(config.proxy.multimodal.clone());
+        crate::proxy::update_stream_timeout_config(config.proxy.stream_timeouts.clone());
         crate::proxy::config::update_global_audit_config(
             config.proxy.experimental.payload_storage_mode.clone(),
             config.proxy.experimental.log_retention_days,

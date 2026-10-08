@@ -3199,7 +3199,7 @@ mod tests {
             panic!("Expected array content");
         }
 
-        // 2. transform_claude_request_in 针对 Claude 模型应保留未带签名的纯思考块
+        // 2. transform_claude_request_in 针对 Claude 模型，无有效签名时为防上游 400 应降级为 <think> 文本保留语义
         let req = ClaudeRequest {
             model: "claude-sonnet-4-6".to_string(),
             messages,
@@ -3231,16 +3231,10 @@ mod tests {
             .expect("Contents array");
         let assistant_parts = contents[1]["parts"].as_array().expect("Assistant parts");
         assert_eq!(assistant_parts.len(), 2);
-        assert_eq!(assistant_parts[0]["thought"], true);
-        assert!(
-            assistant_parts[0].get("thoughtSignature").is_none()
-                || assistant_parts[0]["thoughtSignature"].is_null(),
-            "Sentinel elimination: thoughtSignature must be absent when unsigned"
-        );
-        assert_eq!(
-            assistant_parts[0]["text"],
-            "Considering the question deeply..."
-        );
+        assert!(assistant_parts[0]["text"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Considering the question deeply..."));
         assert_eq!(assistant_parts[1]["text"], "Here is my answer");
     }
 

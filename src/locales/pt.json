@@ -1113,6 +1113,9 @@
         "clear_success": "Armazenamento de pensamentos limpo com sucesso ({{count}} registros excluídos)",
         "clear_error": "Falha ao limpar blocos de pensamento: {{error}}"
       },
+      "stream_timeout_settings": {
+        "title": "Configurações de tempo limite de streaming (Stream Timeout Settings)"
+      },
       "thinking_settings": {
         "title": "Configurações de Raciocínio (Thinking Settings)"
       },
@@ -1128,6 +1131,21 @@
       "agent_settings": {
         "title": "Configurações específicas de Agent (Specific Agent Settings)"
       }
+    },
+    "stream_timeouts": {
+      "banner_title": "Mecanismo de tempo limite em 3 etapas e keepalive contínuo",
+      "banner_desc": "Projetado para modelos de raciocínio profundo, prefills de contexto massivos, compactação de histórico e escrita de arquivos extensos. Três etapas independentes com keepalive contínuo (: ping) para evitar quedas de gateway e loops de repetição.",
+      "ttft_title": "Tolerância para primeiro token (TTFT)",
+      "default_badge": "Padrão: 180s",
+      "ttft_desc": "Cobre filas de inicialização, prefill de 100k+ tokens e tarefas de compactação. Envia pings a cada 3s para manter a conexão ativa.",
+      "transition_title": "Tolerância de transição (Reinício de época)",
+      "transition_desc": "Período de tolerância entre o término do raciocínio e o primeiro token de conteúdo ou chamada de ferramenta. Reinicia o cronômetro automaticamente ao concluir o raciocínio.",
+      "sliding_title": "Tempo limite deslizante (Streaming)",
+      "default_badge_sliding": "Padrão: 45s",
+      "sliding_desc": "Intervalo máximo de silêncio permitido entre tokens consecutivos. Em caso de interrupção, finaliza de forma suave para proteger o código gerado.",
+      "toast_reset": "Configurações de tempo limite restauradas para o padrão",
+      "btn_reset": "Restaurar padrões",
+      "btn_save": "Salvar configurações de tempo limite"
     },
     "cloudflared": {
       "title": "Túnel Cloudflare (Cloudflared)",

@@ -187,6 +187,67 @@ pub fn update_multimodal_config(config: MultimodalConfig) {
     }
 }
 
+// ============================================================================
+// 全局流式梯度超时配置存储
+// ============================================================================
+static GLOBAL_STREAM_TIMEOUT_CONFIG: OnceLock<RwLock<StreamTimeoutConfig>> = OnceLock::new();
+
+/// 获取当前流式梯度超时配置（支持环境变量覆盖，保证 Headless/CLI 一致性）
+pub fn get_stream_timeout_config() -> StreamTimeoutConfig {
+    let base = GLOBAL_STREAM_TIMEOUT_CONFIG
+        .get()
+        .and_then(|lock| lock.read().ok())
+        .map(|cfg| cfg.clone())
+        .unwrap_or_default();
+
+    // 允许通过环境变量覆盖，符合 AGENTS.md Headless & CLI Parity 纪律
+    let initial_ttft_secs = std::env::var("ANTIGRAVITY_TIMEOUT_TTFT_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(base.initial_ttft_secs);
+
+    let transition_secs = std::env::var("ANTIGRAVITY_TIMEOUT_TRANSITION_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(base.transition_secs);
+
+    let streaming_sliding_secs = std::env::var("ANTIGRAVITY_TIMEOUT_STREAMING_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(base.streaming_sliding_secs);
+
+    StreamTimeoutConfig {
+        initial_ttft_secs,
+        transition_secs,
+        streaming_sliding_secs,
+    }
+}
+
+/// 更新全局流式梯度超时配置
+pub fn update_stream_timeout_config(config: StreamTimeoutConfig) {
+    if let Some(lock) = GLOBAL_STREAM_TIMEOUT_CONFIG.get() {
+        if let Ok(mut cfg) = lock.write() {
+            if *cfg != config {
+                *cfg = config.clone();
+                tracing::info!(
+                    "[Stream-Timeouts] Global config updated: ttft={}s, transition={}s, sliding={}s",
+                    config.initial_ttft_secs,
+                    config.transition_secs,
+                    config.streaming_sliding_secs
+                );
+            }
+        }
+    } else {
+        let _ = GLOBAL_STREAM_TIMEOUT_CONFIG.set(RwLock::new(config.clone()));
+        tracing::info!(
+            "[Stream-Timeouts] Global config initialized: ttft={}s, transition={}s, sliding={}s",
+            config.initial_ttft_secs,
+            config.transition_secs,
+            config.streaming_sliding_secs
+        );
+    }
+}
+
 static GLOBAL_PAYLOAD_STORAGE_MODE: OnceLock<RwLock<String>> = OnceLock::new();
 static GLOBAL_LOG_RETENTION_DAYS: OnceLock<RwLock<u32>> = OnceLock::new();
 static GLOBAL_THINKING_STORE_ENABLED: OnceLock<RwLock<bool>> = OnceLock::new();
@@ -685,6 +746,44 @@ impl Default for MultimodalConfig {
     }
 }
 
+/// 流式梯度超时配置 (首字响应、状态切换、推流滑动)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StreamTimeoutConfig {
+    /// 首字响应宽限时长（秒，默认 180s）
+    #[serde(default = "default_initial_ttft_secs")]
+    pub initial_ttft_secs: u64,
+
+    /// 思考至正文/工具调用的状态切换宽限时长（秒，默认 180s）
+    #[serde(default = "default_transition_secs")]
+    pub transition_secs: u64,
+
+    /// 稳态推流相邻 Token 滑动窗口超时（秒，默认 45s）
+    #[serde(default = "default_streaming_sliding_secs")]
+    pub streaming_sliding_secs: u64,
+}
+
+pub fn default_initial_ttft_secs() -> u64 {
+    180
+}
+
+pub fn default_transition_secs() -> u64 {
+    180
+}
+
+pub fn default_streaming_sliding_secs() -> u64 {
+    45
+}
+
+impl Default for StreamTimeoutConfig {
+    fn default() -> Self {
+        Self {
+            initial_ttft_secs: default_initial_ttft_secs(),
+            transition_secs: default_transition_secs(),
+            streaming_sliding_secs: default_streaming_sliding_secs(),
+        }
+    }
+}
+
 /// IP 黑名单配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IpBlacklistConfig {
@@ -891,6 +990,10 @@ pub struct ProxyConfig {
     /// 多模态交互与保鲜滑窗配置
     #[serde(default)]
     pub multimodal: MultimodalConfig,
+
+    /// 流式梯度超时配置 (首字响应、状态切换、推流滑动)
+    #[serde(default)]
+    pub stream_timeouts: StreamTimeoutConfig,
 }
 
 /// Request log retention policy.
@@ -1029,6 +1132,7 @@ impl Default for ProxyConfig {
             global_system_prompt: GlobalSystemPromptConfig::default(),
             proxy_pool: ProxyPoolConfig::default(),
             multimodal: MultimodalConfig::default(),
+            stream_timeouts: StreamTimeoutConfig::default(),
             image_thinking_mode: None,
             image_scheduler: ImageSchedulerConfig::default(),
         }

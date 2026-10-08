@@ -1084,6 +1084,9 @@
         "clear_success": "Đã xóa thành công kho lưu trữ suy nghĩ (đã dọn dẹp {{count}} bản ghi)",
         "clear_error": "Xóa khối suy nghĩ thất bại: {{error}}"
       },
+      "stream_timeout_settings": {
+        "title": "Cài đặt thời gian chờ luồng (Stream Timeout Settings)"
+      },
       "thinking_settings": {
         "title": "Cài đặt suy nghĩ (Thinking Settings)"
       },
@@ -1162,6 +1165,21 @@
       "agent_settings": {
         "title": "Cấu hình Agent cụ thể (Specific Agent Settings)"
       }
+    },
+    "stream_timeouts": {
+      "banner_title": "Cơ chế thời gian chờ luồng 3 giai đoạn và duy trì kết nối",
+      "banner_desc": "Thiết kế cho các mô hình suy nghĩ sâu, Prefill ngữ cảnh lớn, tóm tắt lịch sử và ghi tập tin lớn. Ba giai đoạn độc lập với tín hiệu ping (: ping) liên tục giúp loại bỏ hiện tượng ngắt kết nối gateway và vòng lặp thử lại của client.",
+      "ttft_title": "Thời gian chờ ký tự đầu tiên (TTFT)",
+      "default_badge": "Mặc định: 180s",
+      "ttft_desc": "Bao gồm hàng đợi khởi động nguội, Prefill hơn 100k token và tóm tắt lịch sử. Gửi ping mỗi 3 giây để duy trì kết nối.",
+      "transition_title": "Thời gian chuyển tiếp (Đặt lại bộ đếm)",
+      "transition_desc": "Khoảng thời gian từ khi hoàn tất suy nghĩ đến khi xuất hiện nội dung hoặc lệnh gọi công cụ đầu tiên. Tự động đặt lại bộ đếm khi hoàn tất suy nghĩ.",
+      "sliding_title": "Thời gian chờ trượt khi phát luồng (Streaming)",
+      "default_badge_sliding": "Mặc định: 45s",
+      "sliding_desc": "Khoảng thời gian im lặng tối đa giữa các token liên tiếp. Nếu bị gián đoạn, luồng sẽ được đóng gọn gàng để bảo vệ nội dung đã tạo.",
+      "toast_reset": "Đã khôi phục cài đặt thời gian chờ về mặc định",
+      "btn_reset": "Khôi phục mặc định",
+      "btn_save": "Lưu cài đặt thời gian chờ"
     },
     "example": {
       "title": "Ví dụ Sử dụng",

@@ -311,6 +311,7 @@ pub async fn ensure_admin_server(
     // [NEW] 初始化全局图像思维模式配置
     crate::proxy::update_image_thinking_mode(config.image_thinking_mode.clone());
     crate::proxy::update_multimodal_config(config.multimodal.clone());
+    crate::proxy::update_stream_timeout_config(config.stream_timeouts.clone());
     crate::proxy::config::update_global_audit_config(
         config.experimental.payload_storage_mode.clone(),
         config.experimental.log_retention_days,
