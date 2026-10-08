@@ -3,6 +3,18 @@
 > 完整版本历史记录。返回项目主页请查看 [README_ZH.md](README_ZH.md) | [English Changelog](CHANGELOG_EN.md)。
 
 *   **版本演进**:
+    *   **v4.9.7-beta.4 (2026-10-08)**:
+        -   **[彻底清除模型硬编码、全量官方结构体动态发现与幽灵模型 429 报错根治] (Fixes #3623)**:
+            -   **全量官方模型结构体目录动态导出与零硬编码**: 在 `OfficialModelCatalog` 中新增 `all_model_ids()`，将 `get_supported_models` 中 40+ 个内置模型的静态 `vec![...]` 硬编码彻底清除，完全委托给权威官方模型结构体目录，实现模型列表的零硬编码动态维护。 (Fixes #3623)
+            -   **全局数据驱动的分档后缀自派生**: 将 `-high` / `-medium` / `-low` / `-tiered` / `-extra-low` 等档位后缀的通用剥离逻辑提升至全量模型池，无论是官方结构体自带的分档模型还是账号动态下发模型，均自动自派生对应的原生无后缀裸模型（如 `gemini-3.8-flash`、`claude-sonnet-5-5` 等）。 (Fixes #3623)
+            -   **根治幽灵模型与平滑兼容重定向**: 彻底剔除上游不存在的虚拟模型 `claude-sonnet-4-6-thinking`，在基准线过滤中严格拦截防止暴露；同时在协议别名路由映射中平滑重定向至真实模型 `claude-sonnet-4-6`，彻底根除客户端误用或旧配置调用触发上游 429 并被误报为“配额耗尽”的顽疾。 (Fixes #3623)
+            -   **多端配置与同步对齐**: 同步清理 CLI 同步、OpenCode 同步、前端配置及中英文文档中的过期静态幽灵模型残留。 (Fixes #3623)
+        -   **[Claude SSE 流超时阻塞修复、引入三阶段梯度超时状态机与尾部思考块闭合治理] (PR #3622, Fixes #3621, Thanks to @cubelikeplayDaniel)**:
+            -   **出站流生命周期三阶段梯度超时状态机**: 基于模板方法模式抽象出站流生命周期，分阶段设立首包探测、过渡断崖静默期与正文吞吐梯度超时保护，杜绝长思考中断卡死与会话中毒。 (Thanks to @cubelikeplayDaniel)
+            -   **消灭首包心跳重置与过载重试死循环**: 根除首包 Peek 心跳重置超时死等与全局请求预算缺失导致的轮换假死，修复 `overloaded_error` 诱发重试死循环导致 20+ 分钟卡死。 (Thanks to @cubelikeplayDaniel)
+            -   **尾部思考块闭合与协议合规治理**: 修复尾部签名思考块未闭合与仅思考正常结束下发多余块的协议违规问题。 (Thanks to @cubelikeplayDaniel)
+            -   **可视化配置与多语言支持**: 支持流式三梯度超时与保活参数在前端可视化面板配置与环境变量覆盖，补齐 12 种多国语言国际化文案。 (Thanks to @cubelikeplayDaniel)
+
     *   **v4.9.7-beta.3 (2026-10-07)**:
         -   **[语言切换并发写竞态隔离、内存乐观更新与方言规范化匹配] (PR #3620, Fixes #3619, Thanks to @cubelikeplayDaniel)**:
             -   **串行尾随批处理队列锁 (Coalesced Trailing Persistence Queue)**: 在 `useConfigStore` 中引入 `executeSaveQueue` 批处理等待者模式，并发高频触发时自动合并中间冗余写入，待前序落盘完成后统一尾随持久化最新配置并精确唤醒等待队列，彻底杜绝并发写冲突、脏数据覆盖及虚假报错。 (Thanks to @cubelikeplayDaniel)

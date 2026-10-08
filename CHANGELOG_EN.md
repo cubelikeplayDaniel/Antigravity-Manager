@@ -3,6 +3,18 @@
 > Complete version history for Antigravity Tools. Return to project home at [README.md](README.md).
 
 *   **Version History**:
+    *   **v4.9.7-beta.4 (2026-10-08)**:
+        -   **[Eliminate Hardcoded Models, Dynamic Official Struct Discovery & Eradicate Phantom Model 429 Errors] (Fixes #3623)**:
+            -   **Dynamic Official Model Catalog Export & Zero Hardcoding**: Added `all_model_ids()` in `OfficialModelCatalog` and completely removed the static `vec![...]` of 40+ models in `get_supported_models()`, delegating entirely to the authoritative official model catalog for zero-hardcoding maintenance. (Fixes #3623)
+            -   **Global Data-Driven Tiered Suffix Self-Derivation**: Promoted tier suffix stripping (`-high`, `-medium`, `-low`, `-tiered`, `-extra-low`) to the global model pool, automatically self-deriving bare native models (such as `gemini-3.8-flash`, `claude-sonnet-5-5`, etc.) from any tiered model. (Fixes #3623)
+            -   **Eradicate Phantom Model & Backward-Compatible Redirection**: Completely eradicated the non-existent upstream model `claude-sonnet-4-6-thinking` from `/v1/models` via baseline compliance filters, and configured seamless redirection to genuine `claude-sonnet-4-6` in model specs/routing to eliminate upstream 429 errors disguised as quota exhaustion. (Fixes #3623)
+            -   **Multi-Platform Configuration & Sync Alignment**: Aligned CLI sync, OpenCode sync, frontend configurations, and bilingual documentation with authoritative model names. (Fixes #3623)
+        -   **[Claude SSE Stream Timeout Blocking Fix, 3-Stage Gradient Timeout State Machine & Tail Thought Block Remediation] (PR #3622, Fixes #3621, Thanks to @cubelikeplayDaniel)**:
+            -   **3-Stage Gradient Timeout State Machine**: Abstracted outbound stream lifecycle via the Template Method pattern, implementing staged initial-chunk probing, transition cliff silence, and body throughput timeouts to prevent hangs and session poisoning during long thinking. (Thanks to @cubelikeplayDaniel)
+            -   **Eradicate Heartbeat Reset Dead-Wait & Overload Retry Loops**: Removed Peek heartbeat reset dead-waits and lack of global request budgets causing rotation deadlocks, resolving infinite retry loops triggered by `overloaded_error` that caused 20+ minute freezes. (Thanks to @cubelikeplayDaniel)
+            -   **Tail Thought Block Closure & Protocol Compliance**: Fixed unclosed tail signed thinking blocks and redundant blocks emitted upon normal completion of thought-only requests. (Thanks to @cubelikeplayDaniel)
+            -   **Visual Settings & Multilingual Support**: Added visual UI controls and environment variable overrides for streaming timeouts and keepalive intervals, complemented by full 12-language internationalization. (Thanks to @cubelikeplayDaniel)
+
     *   **v4.9.7-beta.3 (2026-10-07)**:
         -   **[Language Switch Concurrency Queue, Optimistic State Update & Dialect Normalization] (PR #3620, Fixes #3619, Thanks to @cubelikeplayDaniel)**:
             -   **Coalesced Trailing Persistence Queue**: Implemented `executeSaveQueue` with a queued waiters pattern in `useConfigStore` to coalesce rapid intermediate writes, safely trailing the latest configuration to disk and waking pending callers, eliminating disk write races and dirty overwrites. (Thanks to @cubelikeplayDaniel)
