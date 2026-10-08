@@ -355,8 +355,12 @@ pub fn get_daily_stats(days: i64) -> Result<Vec<TokenStatsAggregated>, String> {
 /// Get weekly aggregated stats
 pub fn get_weekly_stats(weeks: i64) -> Result<Vec<TokenStatsAggregated>, String> {
     let conn = connect_db()?;
-    let cutoff = chrono::Local::now() - chrono::Duration::weeks(weeks);
-    let cutoff_timestamp = cutoff.timestamp();
+    let cutoff_timestamp = if weeks <= 0 {
+        0
+    } else {
+        let cutoff = chrono::Local::now() - chrono::Duration::weeks(weeks);
+        cutoff.timestamp()
+    };
 
     let mut stmt = conn
         .prepare(
