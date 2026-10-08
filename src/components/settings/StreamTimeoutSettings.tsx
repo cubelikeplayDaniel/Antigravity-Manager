@@ -13,7 +13,7 @@ interface StreamTimeoutSettingsProps {
 const DEFAULT_TIMEOUTS: Required<StreamTimeoutConfig> = {
     initial_ttft_secs: 180,
     transition_secs: 180,
-    streaming_sliding_secs: 45,
+    streaming_sliding_secs: 120,
 };
 
 export const StreamTimeoutSettings: React.FC<StreamTimeoutSettingsProps> = ({
@@ -25,7 +25,7 @@ export const StreamTimeoutSettings: React.FC<StreamTimeoutSettingsProps> = ({
     const [isSaving, setIsSaving] = useState(false);
     const [savedSuccessfully, setSavedSuccessfully] = useState(false);
 
-    // 编辑框预填预设默认值 (180, 180, 45)
+    // 编辑框预填预设默认值 (180, 180, 120)
     const [rawInputs, setRawInputs] = useState<{
         initial_ttft_secs: string;
         transition_secs: string;
@@ -258,12 +258,12 @@ export const StreamTimeoutSettings: React.FC<StreamTimeoutSettingsProps> = ({
                                 {t("proxy.stream_timeouts.sliding_title", { defaultValue: "推流滑动超时 (Streaming)" })}
                             </span>
                             <span className="text-[10px] px-2 py-0.5 rounded-full font-mono bg-emerald-100/70 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300">
-                                {t("proxy.stream_timeouts.default_badge_sliding", { defaultValue: "默认: 45s" })}
+                                {t("proxy.stream_timeouts.default_badge_sliding", { defaultValue: "默认: 120s" })}
                             </span>
                         </div>
                         <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-normal">
                             {t("proxy.stream_timeouts.sliding_desc", {
-                                defaultValue: "持续吐字过程中相邻 Token 的最大允许静默间隔。若中途意外断流超过此时长，自动优雅截断收尾并保全已生成的代码。"
+                                defaultValue: "持续吐字过程中相邻 Token 的最大允许静默间隔。若中途意外断流超过此时长，安全切断连接以保障客户端原生自动重试。"
                             })}
                         </p>
                     </div>
@@ -283,7 +283,7 @@ export const StreamTimeoutSettings: React.FC<StreamTimeoutSettingsProps> = ({
                                 {t("common.seconds", { defaultValue: "秒" })}
                             </span>
                         </div>
-                        {renderPresetButtons("streaming_sliding_secs", [30, 45, 60, 120], DEFAULT_TIMEOUTS.streaming_sliding_secs)}
+                        {renderPresetButtons("streaming_sliding_secs", [30, 60, 120, 180], DEFAULT_TIMEOUTS.streaming_sliding_secs)}
                     </div>
                 </div>
             </div>

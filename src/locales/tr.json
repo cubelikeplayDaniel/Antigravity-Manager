@@ -1177,7 +1177,7 @@
       "transition_title": "Geçiş Toleransı (Zamanlayıcı Sıfırlama)",
       "transition_desc": "Düşünmenin bitişi ile ilk içerik veya araç çağrısı belirtecinin çıkışı arasındaki süre. Düşünme bittiğinde zamanlayıcıyı otomatik olarak sıfırlar.",
       "sliding_title": "Kayan Akış Zaman Aşımı (Streaming)",
-      "default_badge_sliding": "Varsayılan: 45s",
+      "default_badge_sliding": "Varsayılan: 120s",
       "sliding_desc": "Ardışık belirteçler arasında izin verilen maksimum sessizlik aralığı. Kesinti durumunda oluşturulan çıktıyı koruyarak akışı güvenle tamamlar.",
       "toast_reset": "Akış zaman aşımı ayarları varsayılanlara sıfırlandı",
       "btn_reset": "Varsayılana Sıfırla",

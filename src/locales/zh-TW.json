@@ -1172,7 +1172,7 @@
       "transition_title": "狀態切換寬限 (全新輪迴)",
       "transition_desc": "思考完畢至首個內文或工具調用出字的過渡期。思考結束時自適應重置計時器，為大檔案寫入等裝配留出充分時間。",
       "sliding_title": "推流滑動逾時 (Streaming)",
-      "default_badge_sliding": "預設: 45s",
+      "default_badge_sliding": "預設: 120s",
       "sliding_desc": "持續吐字過程中相鄰 Token 的最大允許靜默間隔。若中途意外斷流超過此時長，自動優雅截斷收尾並保全已產生的程式碼。",
       "toast_reset": "已恢復逾時設定預設值",
       "btn_reset": "恢復預設值",

@@ -1141,7 +1141,7 @@
       "transition_title": "Tolerância de transição (Reinício de época)",
       "transition_desc": "Período de tolerância entre o término do raciocínio e o primeiro token de conteúdo ou chamada de ferramenta. Reinicia o cronômetro automaticamente ao concluir o raciocínio.",
       "sliding_title": "Tempo limite deslizante (Streaming)",
-      "default_badge_sliding": "Padrão: 45s",
+      "default_badge_sliding": "Padrão: 120s",
       "sliding_desc": "Intervalo máximo de silêncio permitido entre tokens consecutivos. Em caso de interrupção, finaliza de forma suave para proteger o código gerado.",
       "toast_reset": "Configurações de tempo limite restauradas para o padrão",
       "btn_reset": "Restaurar padrões",

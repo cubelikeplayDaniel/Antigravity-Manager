@@ -1128,7 +1128,7 @@
       "transition_title": "Gracia de transición (Reinicio de época)",
       "transition_desc": "Período de gracia entre el fin del razonamiento y el primer token de contenido o llamada de herramienta. Reinicia el temporizador automáticamente al finalizar el razonamiento.",
       "sliding_title": "Tiempo de espera deslizante (Streaming)",
-      "default_badge_sliding": "Predeterminado: 45s",
+      "default_badge_sliding": "Predeterminado: 120s",
       "sliding_desc": "Intervalo máximo de silencio permitido entre tokens consecutivos. Si se interrumpe, sella ordenadamente la transmisión para preservar el contenido generado.",
       "toast_reset": "Configuración de tiempos de espera restaurada a valores predeterminados",
       "btn_reset": "Restaurar valores predeterminados",
