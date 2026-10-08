@@ -2,7 +2,7 @@
 //!
 //! 统一接管所有出站协议（Claude、OpenAI 等）的通用流式生命周期：
 //! 1. 3s 细粒度保活心跳（`: ping\n\n`）；
-//! 2. 45s 空闲静默快速熔断（`IDLE_TIMEOUT_SECS = 45`）；
+//! 2. 120s 空闲静默安全熔断（`streaming_sliding_secs = 120`）；
 //! 3. 网络中断统一拦截与状态判断（`has_content` / `has_thinking`）；
 //! 4. 协议守卫（首包报错后严禁追加终结帧）；
 //! 5. 尾部数据安全 Flush（修复 #1732）。
@@ -64,7 +64,7 @@ pub struct StreamLifecycleConfig {
     pub initial_ttft_secs: u64,
     /// 状态切换等待宽限（思考结束至首个正文/工具调用出字，重置基准点，默认 180s）
     pub transition_secs: u64,
-    /// 稳态推流滑动超时（正文或思考吐字中相邻 token 最大间隔，默认 45s）
+    /// 稳态推流滑动超时（正文或思考吐字中相邻 token 最大间隔，默认 120s）
     pub streaming_sliding_secs: u64,
     pub adapter_name: &'static str,
     pub function_name: &'static str,

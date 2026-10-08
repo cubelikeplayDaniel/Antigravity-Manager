@@ -513,7 +513,7 @@ where
         let mut heartbeat_interval = tokio::time::interval(std::time::Duration::from_secs(3));
         heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut last_activity = tokio::time::Instant::now();
-        const IDLE_TIMEOUT_SECS: u64 = 45;
+        const IDLE_TIMEOUT_SECS: u64 = 120;
 
         loop {
             tokio::select! {
@@ -810,7 +810,7 @@ where
         let mut heartbeat_interval = tokio::time::interval(std::time::Duration::from_secs(3));
         heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut last_activity = tokio::time::Instant::now();
-        const IDLE_TIMEOUT_SECS: u64 = 45;
+        const IDLE_TIMEOUT_SECS: u64 = 120;
 
         loop {
             tokio::select! {
