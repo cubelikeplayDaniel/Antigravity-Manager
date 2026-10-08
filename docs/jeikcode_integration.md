@@ -15,7 +15,7 @@
 3. **一键同步 JeikCode**：
    - 在第一个卡片 **JeikCode**（标注有 `🌟 推荐使用 · Best Matched`）中：
      - 系统已自动侦测本地安装的 JeikCode 路径及当前运行的网关地址（如 `http://127.0.0.1:8045/v1` 或自定义端口）。
-     - 在 **「选择同步模型」** 下拉列表中选择您希望默认使用的模型（例如 `gemini-3.8-flash-high` 或 `claude-sonnet-4-6-thinking`）。
+     - 在 **「选择同步模型」** 下拉列表中选择您希望默认使用的模型（例如 `gemini-3.8-flash-high` 或 `claude-sonnet-4-6`）。
      - 点击 **`🔄 立即同步配置`**。
 4. **启动与使用 JeikCode**：
    - 打开终端直接运行 `jeikcode`，即可启动原生 TUI 交互界面。
@@ -62,10 +62,10 @@ reasoning_history = "exclude"
 reasoning_effort = "high"
 reasoning_levels = ["low", "medium", "high"]
 
-# Claude 3.7 Sonnet Thinking (深度逻辑与重构利器)
-[models."claude-sonnet-4-6-thinking"]
+# Claude 3.7 Sonnet (深度逻辑与重构利器)
+[models."claude-sonnet-4-6"]
 account = "antigravity-manager"
-model = "claude-sonnet-4-6-thinking"
+model = "claude-sonnet-4-6"
 context_window = 200000
 image_input = true
 reasoning_model = true
@@ -97,7 +97,7 @@ export ANTHROPIC_BASE_URL="http://127.0.0.1:8045"
 export ANTHROPIC_API_KEY="sk-your-api-key"
 
 # 启动并指定模型
-jeikcode --model claude-sonnet-4-6-thinking
+jeikcode --model claude-sonnet-4-6
 ```
 
 ---

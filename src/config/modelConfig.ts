@@ -275,16 +275,6 @@ export const MODEL_CONFIG: Record<string, ModelConfig> = {
         group: 'Claude',
         tags: ['sonnet'],
     },
-    'claude-sonnet-4-6-thinking': {
-        label: 'Claude 4.6 TK',
-        shortLabel: 'Claude 4.6 TK',
-        protectedKey: 'claude',
-        Icon: Claude.Color,
-        i18nKey: 'proxy.model.claude_sonnet_thinking',
-        i18nDescKey: 'proxy.model.claude_sonnet_thinking',
-        group: 'Claude',
-        tags: ['sonnet', 'thinking'],
-    },
     'claude-opus-4-6': {
         label: 'Claude Opus 4.6',
         shortLabel: 'Claude Opus 4.6',

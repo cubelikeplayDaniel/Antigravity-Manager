@@ -22,19 +22,19 @@ static CLAUDE_TO_GEMINI: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|
 
     // ── Claude 系列核心标准映射 (基准线 >= 4.6) ──
     m.insert("claude-sonnet-4-6", "claude-sonnet-4-6");
-    m.insert("claude-sonnet-4-6-thinking", "claude-sonnet-4-6-thinking");
+    m.insert("claude-sonnet-4-6-thinking", "claude-sonnet-4-6");
     m.insert("claude-opus-4-6", "claude-opus-4-6-thinking");
     m.insert("claude-opus-4-6-thinking", "claude-opus-4-6-thinking");
     // 兼容历史老旧 Claude 模型重定向至 4.6
     m.insert("claude-sonnet-4-5", "claude-sonnet-4-6");
-    m.insert("claude-sonnet-4-5-thinking", "claude-sonnet-4-6-thinking");
+    m.insert("claude-sonnet-4-5-thinking", "claude-sonnet-4-6");
     m.insert("claude-opus-4-5-thinking", "claude-opus-4-6-thinking");
     m.insert("claude-haiku-4-5", "claude-sonnet-4-6");
     m.insert("claude-haiku-4", "claude-sonnet-4-6");
     m.insert("claude-3-5-sonnet", "claude-sonnet-4-6");
     m.insert("claude-3-5-sonnet-latest", "claude-sonnet-4-6");
-    m.insert("claude-3-7-sonnet", "claude-sonnet-4-6-thinking");
-    m.insert("claude-3-7-sonnet-latest", "claude-sonnet-4-6-thinking");
+    m.insert("claude-3-7-sonnet", "claude-sonnet-4-6");
+    m.insert("claude-3-7-sonnet-latest", "claude-sonnet-4-6");
 
     // ── OpenAI 核心映射 (转至当前基准模型) ──
     m.insert("gpt-oss-120b-medium", "gpt-oss-120b-medium");
@@ -187,11 +187,7 @@ fn legacy_claude_family_target(id: &str) -> Option<&'static str> {
         return Some("claude-opus-4-6-thinking");
     }
     if id.contains("sonnet") || id.contains("haiku") {
-        return Some(if thinking {
-            "claude-sonnet-4-6-thinking"
-        } else {
-            "claude-sonnet-4-6"
-        });
+        return Some("claude-sonnet-4-6");
     }
     None
 }
@@ -318,6 +314,10 @@ pub fn is_model_compliant_with_baseline(model: &str) -> bool {
 
     // 1. Claude 系列：以 4.6 为基准线，4.6 以下全部淘汰
     if m.contains("claude") {
+        // claude-sonnet 系列在官方权威结构体中即为包含思考能力的标准模型，不存在带有 -thinking 后缀的衍生版本
+        if m.starts_with("claude-sonnet-") && m.contains("thinking") {
+            return false;
+        }
         if m.contains("4-6") || m.contains("4.6") {
             return true;
         }
@@ -447,58 +447,9 @@ pub fn is_model_compliant_with_baseline(model: &str) -> bool {
     true
 }
 
-/// 获取所有内置支持的标准公开模型列表 (已清理过期实验模型、重复笛卡尔积及旧快照)
+/// 获取所有内置支持的标准公开模型列表 (动态从官方模型结构体目录获取，零硬编码)
 pub fn get_supported_models() -> Vec<String> {
-    vec![
-        // Gemini 3.8 系列
-        "gemini-3.8-flash",
-        "gemini-3.8-flash-high",
-        "gemini-3.8-flash-medium",
-        "gemini-3.8-flash-low",
-        "gemini-3.8-flash-tiered",
-        // Gemini 3.7 系列
-        "gemini-3.7-flash",
-        "gemini-3.7-flash-high",
-        "gemini-3.7-flash-medium",
-        "gemini-3.7-flash-low",
-        "gemini-3.7-flash-tiered",
-        // Gemini 3.6 系列
-        "gemini-3.6-flash",
-        "gemini-3.6-flash-high",
-        "gemini-3.6-flash-medium",
-        "gemini-3.6-flash-low",
-        "gemini-3.6-flash-tiered",
-        // Gemini 3.5 系列
-        "gemini-3.5-flash",
-        "gemini-3.5-flash-low",
-        "gemini-3.5-flash-extra-low",
-        // Gemini 3 系列
-        "gemini-3-flash",
-        "gemini-3-flash-agent",
-        // Gemini 3.1 Pro 系列
-        "gemini-3.1-pro",
-        "gemini-3.1-pro-high",
-        "gemini-3.1-pro-low",
-        // Gemini 3.1 Flash Lite 系列 (轻量快速 1M 上下文模型)
-        "gemini-3.1-flash-lite",
-        // Gemini 图像生成主力模型
-        "gemini-3.1-flash-image",
-        "gemini-3-pro-image",
-        // Claude 系列 (基准线 >= 4.6)
-        "claude-sonnet-4-6",
-        "claude-sonnet-4-6-thinking",
-        "claude-opus-4-6",
-        "claude-opus-4-6-thinking",
-        // 官方 Agent 与预览模型
-        "gemini-pro-agent",
-        "tab_flash_lite_preview",
-        "tab_jump_flash_lite_preview",
-        // OpenAI 系列 (以官方为准)
-        "gpt-oss-120b-medium",
-    ]
-    .into_iter()
-    .map(str::to_string)
-    .collect()
+    crate::models::OfficialModelCatalog::all_model_ids()
 }
 
 /// 动态获取所有可用模型列表 (包含内置与用户自定义与官方端点动态下发)
@@ -518,7 +469,24 @@ pub async fn get_all_dynamic_models(
         }
     }
 
-    // 1.5 动态档位后缀剥离与裸模型派生（纯通用数据驱动）：
+    // 如果未开启 only_raw_quota_models，则追加官方模型结构体目录与自定义映射模型
+    if !only_raw_quota_models {
+        // 2. 获取官方结构体目录中的全量模型 (零硬编码)
+        for m in get_supported_models() {
+            model_ids.insert(m);
+        }
+
+        // 3. 获取所有自定义映射模型 (Custom)
+        {
+            let mapping = custom_mapping.read().await;
+            for key in mapping.keys() {
+                custom_keys.insert(key.clone());
+                model_ids.insert(key.clone());
+            }
+        }
+    }
+
+    // 4. 动态档位后缀剥离与裸模型派生（纯通用数据驱动）：
     // 若上游模型包含分档后缀（如 -high / -medium / -low / -extra-low 等），
     // 自动剥离后缀并衍生对应的裸模型名，只要符合官方基准线，任何品牌家族均可自动派生。
     let mut derived_bare_models = HashSet::new();
@@ -535,24 +503,7 @@ pub async fn get_all_dynamic_models(
         model_ids.insert(bare);
     }
 
-    // 如果未开启 only_raw_quota_models，则追加 custom_mapping 与内置标准公开模型
-    if !only_raw_quota_models {
-        // 2. 获取所有自定义映射模型 (Custom)
-        {
-            let mapping = custom_mapping.read().await;
-            for key in mapping.keys() {
-                custom_keys.insert(key.clone());
-                model_ids.insert(key.clone());
-            }
-        }
-
-        // 3. 获取所有内置标准模型
-        for m in get_supported_models() {
-            model_ids.insert(m);
-        }
-    }
-
-    // 4. 应用官方基准线过滤，彻底剔除已淘汰的旧版模型与内部虚拟 ID
+    // 5. 应用官方基准线过滤，彻底剔除已淘汰的旧版模型与内部虚拟 ID
     // 自定义别名映射（custom_mapping）由用户显式指定，不受官方基准线过滤误杀
     let mut sorted_ids: Vec<_> = model_ids
         .into_iter()
@@ -884,7 +835,7 @@ mod tests {
         );
         assert_eq!(
             map_claude_model_to_gemini("claude-sonnet-4-5-thinking"),
-            "claude-sonnet-4-6-thinking"
+            "claude-sonnet-4-6"
         );
         assert_eq!(
             map_claude_model_to_gemini("claude-opus-4"),
@@ -904,7 +855,7 @@ mod tests {
         );
         assert_eq!(
             map_claude_model_to_gemini("claude-sonnet-4.6-thinking"),
-            "claude-sonnet-4-6-thinking"
+            "claude-sonnet-4-6"
         );
         assert_eq!(
             map_claude_model_to_gemini("claude-haiku-4.5"),
@@ -949,6 +900,13 @@ mod tests {
         // When only_raw_quota_models is FALSE, custom_mapping should be included
         let models_all = get_all_dynamic_models(&custom_mapping, None, false).await;
         assert!(models_all.contains(&"my-custom-model".to_string()));
+        // 动态官方模型与自派生无后缀模型必须包含
+        assert!(models_all.contains(&"claude-sonnet-4-6".to_string()));
+        assert!(models_all.contains(&"claude-opus-4-6-thinking".to_string()));
+        assert!(models_all.contains(&"gemini-3.8-flash".to_string()));
+        assert!(models_all.contains(&"gemini-3.8-flash-high".to_string()));
+        // 非法硬编码模型 claude-sonnet-4-6-thinking 绝不泄露暴露
+        assert!(!models_all.contains(&"claude-sonnet-4-6-thinking".to_string()));
     }
 
     #[tokio::test]
@@ -1231,6 +1189,9 @@ mod tests {
         assert!(is_model_compliant_with_baseline("claude-sonnet-4-6"));
         assert!(is_model_compliant_with_baseline("claude-opus-4-6-thinking"));
         assert!(is_model_compliant_with_baseline("claude-sonnet-4-7"));
+        assert!(!is_model_compliant_with_baseline(
+            "claude-sonnet-4-6-thinking"
+        ));
         assert!(!is_model_compliant_with_baseline("claude-sonnet-4-5"));
         assert!(!is_model_compliant_with_baseline("claude-3-5-sonnet"));
         assert!(!is_model_compliant_with_baseline("claude-3-7-sonnet"));

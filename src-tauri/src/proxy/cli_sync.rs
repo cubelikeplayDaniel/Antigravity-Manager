@@ -1204,10 +1204,6 @@ pub fn get_core_gateway_models() -> &'static [CoreModel] {
             context_window: 256_000,
         },
         CoreModel {
-            id: "claude-sonnet-4-6-thinking",
-            context_window: 256_000,
-        },
-        CoreModel {
             id: "claude-sonnet-4-5",
             context_window: 256_000,
         },
@@ -1665,7 +1661,6 @@ model = "deepseek-chat"
         // 验证核心模型已添加
         let models = doc.get("models").unwrap().as_table().unwrap();
         assert!(models.contains_key("claude-sonnet-4-6"));
-        assert!(models.contains_key("claude-sonnet-4-6-thinking"));
         assert!(models.contains_key("claude-opus-4-6"));
         assert!(models.contains_key("gemini-3.8-flash"));
         assert!(models.contains_key("gemini-3.8-flash-tiered"));

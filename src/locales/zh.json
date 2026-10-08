@@ -1262,7 +1262,7 @@
     },
     "router": {
       "title": "模型路由中心 (Model Router)",
-      "subtitle": "按“规格家族”统一路由 OpenAI/Claude 模型，或添加最高优先级的“精确映射”。\n注意：Claude 原生直通模型（claude-sonnet-4-6-thinking, claude-opus-4-6-thinking 等）默认透传，需在“专家精确映射”中添加规则才能修改。",
+      "subtitle": "按“规格家族”统一路由 OpenAI/Claude 模型，或添加最高优先级的“精确映射”。\n注意：Claude 原生直通模型（claude-sonnet-4-6, claude-opus-4-6-thinking 等）默认透传，需在“专家精确映射”中添加规则才能修改。",
       "subtitle_simple": "通过通配符或精确映射自定义模型路由规则",
       "only_raw_quota_models": "仅暴露真实配额模型",
       "only_raw_quota_models_tooltip": "开启后 /v1/models 仅展示当前账号已获取配额的真实模型，隐藏内置的虚拟映射别名（如 gpt-4o 等）及画幅变体模型",
