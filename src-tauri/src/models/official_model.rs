@@ -251,6 +251,15 @@ impl OfficialModelCatalog {
         }
     }
 
+    /// 获取当前官方模型目录中所有权威模型 ID 列表
+    pub fn all_model_ids() -> Vec<String> {
+        if let Ok(lock) = DYNAMIC_CATALOG.read() {
+            lock.keys().cloned().collect()
+        } else {
+            Vec::new()
+        }
+    }
+
     /// 根据用户传入的模型 ID（官方标准 ID、别名、路由结果，以及大小写不敏感的精确名）
     /// 获取对应的官方模型结构体。未命中时返回 None，由调用方使用 `default_model()`。
     pub fn get(model_id: &str) -> Option<OfficialModelInfo> {

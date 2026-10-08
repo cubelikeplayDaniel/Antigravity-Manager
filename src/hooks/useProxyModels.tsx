@@ -45,7 +45,6 @@ const ALIAS_TO_CANONICAL: Record<string, { id: string; name: string; group: stri
 
     // Claude (基准线 >= 4.6)
     'claude-sonnet-4-6': { id: 'claude-sonnet-4-6', name: 'claude-sonnet-4-6', group: 'Claude' },
-    'claude-sonnet-4-6-thinking': { id: 'claude-sonnet-4-6-thinking', name: 'claude-sonnet-4-6-thinking', group: 'Claude' },
     'claude-opus-4-6': { id: 'claude-opus-4-6', name: 'claude-opus-4-6', group: 'Claude' },
     'claude-opus-4-6-thinking': { id: 'claude-opus-4-6-thinking', name: 'claude-opus-4-6-thinking', group: 'Claude' },
 
