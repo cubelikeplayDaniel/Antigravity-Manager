@@ -264,6 +264,24 @@ where
                     };
 
                     if last_activity.elapsed() >= std::time::Duration::from_secs(phase_timeout_secs) {
+                        // [关键自适应跃迁：思考至正文过渡断崖检测]
+                        // 若处于思考期，且静默时间达到稳态滑动超时，但正文/工具调用尚未产生，
+                        // 说明思考吐字已完成，上游正处于生成正文或大工具调用的计算静默期（过渡断崖 Transition Cliff）。
+                        // 此时绝不可直接超时误杀，而应自动跃迁至 Transition 状态，重置时间基准点，
+                        // 赋予独立的 transition_secs (180s) 宽限期，并继续下发心跳保活。
+                        if phase == StreamPhase::Thinking && !handler.has_content() {
+                            tracing::info!(
+                                "[{}] 思考流静默已达 {}s，检测到过渡断崖 (Transition Cliff)，自动跃迁至 Transition 状态并开启 {}s 宽限期",
+                                config.adapter_name,
+                                phase_timeout_secs,
+                                config.transition_secs
+                            );
+                            phase = StreamPhase::Transition;
+                            last_activity = tokio::time::Instant::now();
+                            yield Ok(handler.heartbeat_frame());
+                            continue;
+                        }
+
                         let report = crate::proxy::mappers::error_classifier::report_stream_error(
                             config.adapter_name,
                             config.function_name,
@@ -514,6 +532,37 @@ mod tests {
         assert!(full_output.contains("processed:data: thinking_done"));
         assert!(full_output.contains("processed:data: content_final"));
         assert!(full_output.contains("[finalized]"));
+        assert!(!full_output.contains("[initial_error]"));
+    }
+
+    #[tokio::test]
+    async fn test_lifecycle_silent_transition_cliff_auto_promotion() {
+        // 模拟真实网络环境中思考吐字完毕后无任何显式控制块，
+        // 上游静默时间超过稳态推流超时（streaming_sliding_secs=1s）后才产生正文。
+        // 验证状态机不会在 1s 被误杀，而是自动跃迁至 Transition 状态赋予 4s 宽限，成功收尾。
+        let mock_stream = async_stream::stream! {
+            yield Ok::<_, String>(Bytes::from("data: thinking_chunk\n"));
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            yield Ok::<_, String>(Bytes::from("data: content_final\n"));
+        };
+
+        let handler = MockHandler::new(false, false);
+        let config = StreamLifecycleConfig::new("test", "test_fn", "trace_cliff".to_string())
+            .with_timeouts(5, 4, 1);
+        let mut stream = run_stream_lifecycle(Box::pin(mock_stream), handler, config);
+
+        let mut output = Vec::new();
+        while let Some(item) = stream.next().await {
+            if let Ok(b) = item {
+                output.push(String::from_utf8_lossy(&b).to_string());
+            }
+        }
+
+        let full_output = output.join("");
+        assert!(full_output.contains("processed:data: thinking_chunk"));
+        assert!(full_output.contains("processed:data: content_final"));
+        assert!(full_output.contains("[finalized]"));
+        assert!(!full_output.contains("[truncated]"));
         assert!(!full_output.contains("[initial_error]"));
     }
 }

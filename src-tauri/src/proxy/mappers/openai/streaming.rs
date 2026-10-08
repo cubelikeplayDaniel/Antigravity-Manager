@@ -91,6 +91,7 @@ pub struct OpenAIChatStreamHandler {
     pub thinking_acc: crate::proxy::thinking_store::TurnAccumulator,
     pub has_content: bool,
     pub has_thinking: bool,
+    pub is_thinking_active: bool,
 }
 
 impl ProtocolStreamHandler for OpenAIChatStreamHandler {
@@ -242,6 +243,7 @@ impl ProtocolStreamHandler for OpenAIChatStreamHandler {
 
                                     self.tool_call_index += 1;
                                     self.has_content = true;
+                                    self.is_thinking_active = false;
                                     let sse_out = format!(
                                         "data: {}\n\n",
                                         serde_json::to_string(&tool_call_chunk).unwrap_or_default()
@@ -309,6 +311,7 @@ impl ProtocolStreamHandler for OpenAIChatStreamHandler {
 
                     if !thought_out.is_empty() {
                         self.has_thinking = true;
+                        self.is_thinking_active = true;
                         let reasoning_chunk = json!({
                             "id": &self.stream_id,
                             "object": "chat.completion.chunk",
@@ -328,6 +331,7 @@ impl ProtocolStreamHandler for OpenAIChatStreamHandler {
                     }
 
                     if !content_out.is_empty() || finish_reason.is_some() {
+                        self.is_thinking_active = false;
                         if !content_out.is_empty() {
                             self.has_content = true;
                         }
@@ -382,6 +386,10 @@ impl ProtocolStreamHandler for OpenAIChatStreamHandler {
 
     fn has_thinking(&self) -> bool {
         self.has_thinking
+    }
+
+    fn is_thinking_active(&self) -> bool {
+        self.is_thinking_active
     }
 
     fn emit_finalize(&mut self) -> Vec<Bytes> {
@@ -467,6 +475,7 @@ where
         thinking_acc,
         has_content: false,
         has_thinking: false,
+        is_thinking_active: false,
     };
 
     let config =
