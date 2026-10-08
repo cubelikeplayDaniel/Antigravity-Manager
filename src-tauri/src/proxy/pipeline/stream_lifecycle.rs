@@ -48,6 +48,11 @@ pub trait ProtocolStreamHandler: Send + 'static {
     /// 返回协议专属的非重试终端错误帧（Claude 下发 api_error，OpenAI 下发 error frame）
     fn emit_initial_error(&mut self, error_report: &StreamErrorReport) -> Vec<Bytes>;
 
+    /// 可选：检查当前是否正处于思考块输出中（例如 Claude 的 Thinking block 处于打开状态）
+    fn is_thinking_active(&self) -> bool {
+        false
+    }
+
     /// 可选钩子：心跳帧自定义渲染（缺省为标准 SSE 注释 `: ping\n\n`）
     fn heartbeat_frame(&mut self) -> Bytes {
         Bytes::from(": ping\n\n")
@@ -61,7 +66,12 @@ pub trait ProtocolStreamHandler: Send + 'static {
 #[derive(Debug, Clone)]
 pub struct StreamLifecycleConfig {
     pub heartbeat_secs: u64,
-    pub idle_timeout_secs: u64,
+    /// 首字等待宽限（涵盖排队、冷启动、超大 Prefill 及压缩任务，默认 180s）
+    pub initial_ttft_secs: u64,
+    /// 状态切换等待宽限（思考结束至首个正文/工具调用出字，重置基准点，默认 180s）
+    pub transition_secs: u64,
+    /// 稳态推流滑动超时（正文或思考吐字中相邻 token 最大间隔，默认 45s）
+    pub streaming_sliding_secs: u64,
     pub adapter_name: &'static str,
     pub function_name: &'static str,
     pub trace_info: String,
@@ -75,12 +85,39 @@ impl StreamLifecycleConfig {
     ) -> Self {
         Self {
             heartbeat_secs: 3,
-            idle_timeout_secs: 45,
+            initial_ttft_secs: 180,
+            transition_secs: 180,
+            streaming_sliding_secs: 45,
             adapter_name,
             function_name,
             trace_info,
         }
     }
+
+    pub fn with_timeouts(
+        mut self,
+        initial_ttft_secs: u64,
+        transition_secs: u64,
+        streaming_sliding_secs: u64,
+    ) -> Self {
+        self.initial_ttft_secs = initial_ttft_secs;
+        self.transition_secs = transition_secs;
+        self.streaming_sliding_secs = streaming_sliding_secs;
+        self
+    }
+}
+
+/// 流式交互生命周期状态
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamPhase {
+    /// 首字等待期（涵盖上游冷启动排队、大 Prompt prefill 及压缩任务）
+    InitialTtft,
+    /// 思考生成中
+    Thinking,
+    /// 状态切换过渡断崖（思考结束，正文或工具首字尚未到达；开启全新轮回）
+    Transition,
+    /// 稳态推流（持续吐正文或工具调用）
+    Streaming,
 }
 
 /// 通用出站流生命周期驱动器（模板方法）
@@ -107,8 +144,8 @@ where
             tokio::time::interval(std::time::Duration::from_secs(config.heartbeat_secs));
         heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+        let mut phase = StreamPhase::InitialTtft;
         let mut last_activity = tokio::time::Instant::now();
-        let idle_timeout = std::time::Duration::from_secs(config.idle_timeout_secs);
         let mut error_emitted = false;
         let mut was_interrupted = false;
 
@@ -117,7 +154,6 @@ where
                 next_chunk = upstream_stream.next() => {
                     match next_chunk {
                         Some(chunk_result) => {
-                            last_activity = tokio::time::Instant::now();
                             match chunk_result {
                                 Ok(chunk) => {
                                     buffer.extend_from_slice(&chunk);
@@ -134,8 +170,55 @@ where
                                             yield Ok(out_chunk);
                                         }
                                     }
+
+                                    // 状态机感知与多梯度超时刷新
+                                    match phase {
+                                        StreamPhase::InitialTtft => {
+                                            if handler.has_thinking() {
+                                                if handler.is_thinking_active() {
+                                                    phase = StreamPhase::Thinking;
+                                                } else if handler.has_content() {
+                                                    phase = StreamPhase::Streaming;
+                                                } else {
+                                                    phase = StreamPhase::Transition;
+                                                }
+                                                last_activity = tokio::time::Instant::now();
+                                            } else if handler.has_content() {
+                                                phase = StreamPhase::Streaming;
+                                                last_activity = tokio::time::Instant::now();
+                                            } else {
+                                                last_activity = tokio::time::Instant::now();
+                                            }
+                                        }
+                                        StreamPhase::Thinking => {
+                                            if !handler.is_thinking_active() {
+                                                if handler.has_content() {
+                                                    phase = StreamPhase::Streaming;
+                                                    last_activity = tokio::time::Instant::now();
+                                                } else {
+                                                    // 思考结束，正文/工具调用首字尚未产生：跃迁至过渡断崖并重置基准点（全新轮回）
+                                                    phase = StreamPhase::Transition;
+                                                    last_activity = tokio::time::Instant::now();
+                                                }
+                                            } else {
+                                                last_activity = tokio::time::Instant::now();
+                                            }
+                                        }
+                                        StreamPhase::Transition => {
+                                            if handler.has_content() {
+                                                phase = StreamPhase::Streaming;
+                                                last_activity = tokio::time::Instant::now();
+                                            } else {
+                                                last_activity = tokio::time::Instant::now();
+                                            }
+                                        }
+                                        StreamPhase::Streaming => {
+                                            last_activity = tokio::time::Instant::now();
+                                        }
+                                    }
                                 }
                                 Err(e) => {
+                                    last_activity = tokio::time::Instant::now();
                                     let report = crate::proxy::mappers::error_classifier::report_stream_error(
                                         config.adapter_name,
                                         config.function_name,
@@ -174,24 +257,35 @@ where
                     }
                 }
                 _ = heartbeat_interval.tick() => {
-                    if last_activity.elapsed() >= idle_timeout {
+                    let phase_timeout_secs = match phase {
+                        StreamPhase::InitialTtft => config.initial_ttft_secs,
+                        StreamPhase::Transition => config.transition_secs,
+                        StreamPhase::Thinking | StreamPhase::Streaming => config.streaming_sliding_secs,
+                    };
+
+                    if last_activity.elapsed() >= std::time::Duration::from_secs(phase_timeout_secs) {
                         let report = crate::proxy::mappers::error_classifier::report_stream_error(
                             config.adapter_name,
                             config.function_name,
                             &"stream idle timeout",
-                            format!("{} idle_secs={}", config.trace_info, config.idle_timeout_secs),
+                            format!(
+                                "{} phase={:?} timeout_secs={}",
+                                config.trace_info, phase, phase_timeout_secs
+                            ),
                         );
                         tracing::warn!(
-                            "[{}] {} stream idle timeout after {}s",
+                            "[{}] {} stream idle timeout after {}s in phase {:?}",
                             config.adapter_name,
                             config.function_name,
-                            config.idle_timeout_secs
+                            phase_timeout_secs,
+                            phase
                         );
 
                         if handler.has_content() || handler.has_thinking() {
                             tracing::info!(
-                                "[{}] Idle timeout after content/thinking emitted. Gracefully completing turn to prevent retry deadlock.",
-                                config.adapter_name
+                                "[{}] Idle timeout after content/thinking emitted in phase {:?}. Gracefully completing turn to prevent retry deadlock.",
+                                config.adapter_name,
+                                phase
                             );
                             was_interrupted = true;
                             break;
@@ -254,6 +348,7 @@ mod tests {
         processed_lines: Vec<String>,
         has_content: bool,
         has_thinking: bool,
+        is_thinking_active: bool,
         finalized: bool,
         initial_error_emitted: bool,
         interrupted: bool,
@@ -265,6 +360,7 @@ mod tests {
                 processed_lines: Vec::new(),
                 has_content,
                 has_thinking,
+                is_thinking_active: false,
                 finalized: false,
                 initial_error_emitted: false,
                 interrupted: false,
@@ -275,7 +371,15 @@ mod tests {
     impl ProtocolStreamHandler for MockHandler {
         fn process_line(&mut self, line: &str) -> Vec<Bytes> {
             self.processed_lines.push(line.to_string());
-            self.has_content = true;
+            if line.contains("thinking_chunk") {
+                self.has_thinking = true;
+                self.is_thinking_active = true;
+            } else if line.contains("thinking_done") {
+                self.has_thinking = true;
+                self.is_thinking_active = false;
+            } else {
+                self.has_content = true;
+            }
             vec![Bytes::from(format!("processed:{}\n", line))]
         }
 
@@ -285,6 +389,10 @@ mod tests {
 
         fn has_thinking(&self) -> bool {
             self.has_thinking
+        }
+
+        fn is_thinking_active(&self) -> bool {
+            self.is_thinking_active
         }
 
         fn emit_interruption_truncation(&mut self) -> Vec<Bytes> {
@@ -379,5 +487,33 @@ mod tests {
             !full_output.contains("[initial_error]"),
             "Must NOT emit initial error when content exists"
         );
+    }
+
+    #[tokio::test]
+    async fn test_lifecycle_gradient_timeouts_and_transition() {
+        let mock_stream = async_stream::stream! {
+            yield Ok::<_, String>(Bytes::from("data: thinking_chunk\n"));
+            yield Ok::<_, String>(Bytes::from("data: thinking_done\n"));
+            yield Ok::<_, String>(Bytes::from("data: content_final\n"));
+        };
+
+        let handler = MockHandler::new(false, false);
+        let config = StreamLifecycleConfig::new("test", "test_fn", "trace_gradient".to_string())
+            .with_timeouts(5, 5, 2);
+        let mut stream = run_stream_lifecycle(Box::pin(mock_stream), handler, config);
+
+        let mut output = Vec::new();
+        while let Some(item) = stream.next().await {
+            if let Ok(b) = item {
+                output.push(String::from_utf8_lossy(&b).to_string());
+            }
+        }
+
+        let full_output = output.join("");
+        assert!(full_output.contains("processed:data: thinking_chunk"));
+        assert!(full_output.contains("processed:data: thinking_done"));
+        assert!(full_output.contains("processed:data: content_final"));
+        assert!(full_output.contains("[finalized]"));
+        assert!(!full_output.contains("[initial_error]"));
     }
 }

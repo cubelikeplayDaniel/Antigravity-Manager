@@ -17,7 +17,7 @@ pub use request::{
     transform_claude_request_in_timed,
 };
 pub use response::transform_response;
-pub use streaming::{PartProcessor, StreamingState};
+pub use streaming::{BlockType, PartProcessor, StreamingState};
 pub use thinking_utils::filter_invalid_thinking_blocks_with_family; // [NEW]
 
 use crate::proxy::mappers::error_classifier::StreamErrorReport;
@@ -44,6 +44,10 @@ impl ProtocolStreamHandler for ClaudeStreamHandler {
 
     fn has_thinking(&self) -> bool {
         self.state.has_thinking
+    }
+
+    fn is_thinking_active(&self) -> bool {
+        self.state.current_block_type() == BlockType::Thinking
     }
 
     fn emit_interruption_truncation(&mut self) -> Vec<Bytes> {
