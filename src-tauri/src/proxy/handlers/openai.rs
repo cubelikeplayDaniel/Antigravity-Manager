@@ -2585,7 +2585,7 @@ pub async fn handle_chat_completions(
                             Err(_) => {
                                 tracing::error!("[OpenAI-SSE] Idle timeout after 300s, terminating stream");
                                 stream_failed = true;
-                                yield Ok::<Bytes, String>(Bytes::from("data: [DONE]\n\n"));
+                                yield Err::<Bytes, String>("Stream idle timeout after 300s".to_string());
                                 break;
                             }
                         }

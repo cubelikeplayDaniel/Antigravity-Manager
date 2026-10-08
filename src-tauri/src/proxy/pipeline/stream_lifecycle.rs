@@ -34,13 +34,7 @@ pub trait ProtocolStreamHandler: Send + 'static {
         false
     }
 
-    /// 当流被中断或超时且 has_content() == true 时调用
-    /// 注入协议专属的截断提示（Claude 下发 text_delta，OpenAI 可选下发 delta 或平稳截断）
-    fn emit_interruption_truncation(&mut self) -> Vec<Bytes> {
-        Vec::new()
-    }
-
-    /// 流正常结束或截断恢复后调用，产出协议专属的终结帧
+    /// 流正常结束调用，产出协议专属的终结帧
     /// （Claude 下发 message_delta(end_turn) + message_stop，OpenAI 下发 [DONE] 及可选 usage chunk）
     fn emit_finalize(&mut self) -> Vec<Bytes>;
 
@@ -148,7 +142,6 @@ where
         let mut phase = StreamPhase::InitialTtft;
         let mut last_activity = tokio::time::Instant::now();
         let mut error_emitted = false;
-        let mut was_interrupted = false;
 
         loop {
             tokio::select! {
@@ -219,7 +212,6 @@ where
                                     }
                                 }
                                 Err(e) => {
-                                    last_activity = tokio::time::Instant::now();
                                     let report = crate::proxy::mappers::error_classifier::report_stream_error(
                                         config.adapter_name,
                                         config.function_name,
@@ -233,24 +225,18 @@ where
                                         report.client_message()
                                     );
 
-                                    // [优雅截断恢复与重试风暴切断]
-                                    // 若正文或思考已经输出，绝不抛出可重试错误导致客户端指数退避卡死，
-                                    // 而是平稳标记中断并跳出循环以完成正常收尾。
-                                    if handler.has_content() || handler.has_thinking() {
-                                        tracing::info!(
-                                            "[{}] Stream interrupted after content/thinking emitted. Gracefully completing turn to prevent retry deadlock.",
-                                            config.adapter_name
-                                        );
-                                        was_interrupted = true;
-                                        break;
-                                    } else {
+                                    // 若首包前发生异常（未产生任何正文与思考），下发协议专属的初始错误事件
+                                    if !handler.has_content() && !handler.has_thinking() {
                                         let err_chunks = handler.emit_initial_error(&report);
                                         for c in err_chunks {
                                             yield Ok(c);
                                         }
-                                        error_emitted = true;
-                                        break;
                                     }
+                                    error_emitted = true;
+                                    // 无论处于何种阶段，中途发生上游网络断开时如实作为 Err 流出，
+                                    // 严禁吞没错误伪造 end_turn 或 message_stop，交由客户端原生重试机制接管。
+                                    yield Err(report.client_message());
+                                    break;
                                 }
                             }
                         }
@@ -300,29 +286,22 @@ where
                             phase
                         );
 
-                        if handler.has_content() || handler.has_thinking() {
-                            tracing::info!(
-                                "[{}] Idle timeout after content/thinking emitted in phase {:?}. Gracefully completing turn to prevent retry deadlock.",
-                                config.adapter_name,
-                                phase
-                            );
-                            was_interrupted = true;
-                            break;
-                        } else {
+                        if !handler.has_content() && !handler.has_thinking() {
                             let err_chunks = handler.emit_initial_error(&report);
                             for c in err_chunks {
                                 yield Ok(c);
                             }
-                            error_emitted = true;
-                            break;
                         }
+                        error_emitted = true;
+                        yield Err(report.client_message());
+                        break;
                     }
                     yield Ok(handler.heartbeat_frame());
                 }
             }
         }
 
-        // 协议守卫：如果已经下发了初始错误帧，严格禁止追加发送终结帧，防止破坏客户端状态机
+        // 协议守卫：如果因错误退出，严格禁止追加发送终结帧，防止破坏客户端状态机
         if error_emitted {
             handler.on_finish();
             return;
@@ -341,15 +320,7 @@ where
             buffer.clear();
         }
 
-        // 中断场景下注入截断提示
-        if was_interrupted {
-            let trunc_chunks = handler.emit_interruption_truncation();
-            for c in trunc_chunks {
-                yield Ok(c);
-            }
-        }
-
-        // 正常收尾或截断后收尾
+        // 正常收尾
         let final_chunks = handler.emit_finalize();
         for c in final_chunks {
             yield Ok(c);
@@ -370,7 +341,6 @@ mod tests {
         is_thinking_active: bool,
         finalized: bool,
         initial_error_emitted: bool,
-        interrupted: bool,
     }
 
     impl MockHandler {
@@ -382,7 +352,6 @@ mod tests {
                 is_thinking_active: false,
                 finalized: false,
                 initial_error_emitted: false,
-                interrupted: false,
             }
         }
     }
@@ -412,11 +381,6 @@ mod tests {
 
         fn is_thinking_active(&self) -> bool {
             self.is_thinking_active
-        }
-
-        fn emit_interruption_truncation(&mut self) -> Vec<Bytes> {
-            self.interrupted = true;
-            vec![Bytes::from("[truncated]\n")]
         }
 
         fn emit_finalize(&mut self) -> Vec<Bytes> {
@@ -481,7 +445,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_lifecycle_interruption_after_content_gracefully_finalizes() {
+    async fn test_lifecycle_interruption_after_content_propagates_error_without_finalize() {
         let mock_stream = async_stream::stream! {
             yield Ok::<_, String>(Bytes::from("data: partial content\n"));
             yield Err::<Bytes, _>("connection reset mid stream".to_string());
@@ -492,20 +456,28 @@ mod tests {
         let mut stream = run_stream_lifecycle(Box::pin(mock_stream), handler, config);
 
         let mut output = Vec::new();
+        let mut error_received = false;
         while let Some(item) = stream.next().await {
-            if let Ok(b) = item {
-                output.push(String::from_utf8_lossy(&b).to_string());
+            match item {
+                Ok(b) => output.push(String::from_utf8_lossy(&b).to_string()),
+                Err(e) => {
+                    error_received = true;
+                    assert!(e.contains("connection reset mid stream"));
+                }
             }
         }
 
         let full_output = output.join("");
         assert!(full_output.contains("processed:data: partial content"));
-        assert!(full_output.contains("[truncated]"));
-        assert!(full_output.contains("[finalized]"));
+        assert!(
+            !full_output.contains("[finalized]"),
+            "Must NOT finalize when error occurs"
+        );
         assert!(
             !full_output.contains("[initial_error]"),
             "Must NOT emit initial error when content exists"
         );
+        assert!(error_received, "Stream must propagate Err on interruption");
     }
 
     #[tokio::test]

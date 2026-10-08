@@ -50,21 +50,6 @@ impl ProtocolStreamHandler for ClaudeStreamHandler {
         self.state.current_block_type() == BlockType::Thinking
     }
 
-    fn emit_interruption_truncation(&mut self) -> Vec<Bytes> {
-        if self.state.has_content
-            && self.state.current_block_type()
-                == crate::proxy::mappers::claude::streaming::BlockType::Text
-        {
-            let truncation_msg =
-                "\n\n[System: Upstream connection interrupted. Response truncated by Antigravity.]";
-            vec![self
-                .state
-                .emit_delta("text_delta", serde_json::json!({ "text": truncation_msg }))]
-        } else {
-            Vec::new()
-        }
-    }
-
     fn emit_finalize(&mut self) -> Vec<Bytes> {
         let mut out = Vec::new();
 
@@ -596,10 +581,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_claude_sse_stream_mid_stream_interruption_gracefully_recovers() {
+    async fn test_create_claude_sse_stream_mid_stream_interruption_propagates_error_and_does_not_fake_end_turn(
+    ) {
         use futures::StreamExt;
 
-        // 模拟一个发送了部分内容后发生网络中断的流（如用户遇到的 "1. 萌系 Claude 牛" 之后断流）
+        // 模拟一个发送了部分内容后发生网络中断的流
         let mock_stream = async_stream::stream! {
             yield Ok::<_, String>(bytes::Bytes::from("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hello world\"}]}}]}\n\n"));
             yield Err("error reading a body from connection: connection reset by peer".to_string());
@@ -619,49 +605,42 @@ mod tests {
         );
 
         let mut all_chunks = Vec::new();
+        let mut error_propagated = false;
         while let Some(result) = claude_stream.next().await {
-            if let Ok(bytes) = result {
-                all_chunks.push(String::from_utf8(bytes.to_vec()).unwrap());
+            match result {
+                Ok(bytes) => all_chunks.push(String::from_utf8(bytes.to_vec()).unwrap()),
+                Err(e) => {
+                    error_propagated = true;
+                    assert!(e.contains("connection reset by peer"));
+                }
             }
         }
         let output = all_chunks.join("");
 
-        // 1. 必须包含已输出的内容
+        // 1. 包含已输出的正文
         assert!(
             output.contains("Hello world"),
             "Output must contain text emitted before error"
         );
 
-        // 2. 必须注入截断系统提示
+        // 2. 严禁注入假截断系统提示
         assert!(
-            output.contains("Upstream connection interrupted. Response truncated by Antigravity"),
-            "Output must contain graceful truncation notice"
+            !output.contains("Response truncated by Antigravity"),
+            "Must NOT inject synthetic truncation notice into user content"
         );
 
-        // 3. 必须包含正常收尾的 message_delta 和 message_stop，使客户端顺利完成当前轮次
+        // 3. 严禁伪造正常收尾 message_delta(end_turn) 或 message_stop 欺骗客户端
         assert!(
-            output.contains("event: message_delta"),
-            "Output must contain message_delta"
+            !output.contains(r#""stop_reason":"end_turn""#),
+            "Must NOT fake stop_reason end_turn on network drop"
         );
         assert!(
-            output.contains(r#""stop_reason":"end_turn""#),
-            "Output must end with stop_reason end_turn"
-        );
-        assert!(
-            output.contains("event: message_stop"),
-            "Output must contain message_stop"
+            !output.contains("event: message_stop"),
+            "Must NOT emit message_stop on network drop"
         );
 
-        // 4. [FIX #3621 关键断言] 严禁在已输出内容后发送 event: error 或 overloaded_error！
-        // 彻底切断导致 Claude Code CLI / Anthropic SDK 产生 20+ 分钟恶性指数退避重试死锁的根因
-        assert!(
-            !output.contains("event: error"),
-            "Must NOT emit event: error after content was already emitted"
-        );
-        assert!(
-            !output.contains(r#""type":"overloaded_error""#),
-            "Must NOT emit overloaded_error which triggers infinite client retries"
-        );
+        // 4. 必须向外层传播 Err，供下游触发真实网络连接异常与自动重试
+        assert!(error_propagated, "Mid-stream error must propagate as Err");
     }
 
     #[tokio::test]
