@@ -757,7 +757,7 @@ pub struct StreamTimeoutConfig {
     #[serde(default = "default_transition_secs")]
     pub transition_secs: u64,
 
-    /// 稳态推流相邻 Token 滑动窗口超时（秒，默认 45s）
+    /// 稳态推流相邻 Token 滑动窗口超时（秒，默认 120s）
     #[serde(default = "default_streaming_sliding_secs")]
     pub streaming_sliding_secs: u64,
 }
@@ -771,7 +771,7 @@ pub fn default_transition_secs() -> u64 {
 }
 
 pub fn default_streaming_sliding_secs() -> u64 {
-    45
+    120
 }
 
 impl Default for StreamTimeoutConfig {
