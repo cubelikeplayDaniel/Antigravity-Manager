@@ -33,13 +33,16 @@ pub mod thinking_store; // 服务端完整思考块存储
 pub mod upstream; // 上游客户端
 pub mod video; // 视频处理模块
 
+pub use config::get_stream_timeout_config;
 pub use config::update_global_system_prompt_config;
 pub use config::update_image_thinking_mode;
 pub use config::update_multimodal_config;
+pub use config::update_stream_timeout_config;
 pub use config::update_thinking_budget_config;
 pub use config::ProxyAuthMode;
 pub use config::ProxyConfig;
 pub use config::ProxyPoolConfig;
+pub use config::StreamTimeoutConfig;
 pub use security::ProxySecurityConfig;
 pub use server::AxumServer;
 pub use signature_cache::SignatureCache;

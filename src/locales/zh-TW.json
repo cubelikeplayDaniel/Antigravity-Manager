@@ -1086,6 +1086,9 @@
         "clear_success": "已成功清空思考區塊儲存 (共清理 {{count}} 條歷史記錄)",
         "clear_error": "清空思考區塊失敗: {{error}}"
       },
+      "stream_timeout_settings": {
+        "title": "串流逾時設定 (Stream Timeout Settings)"
+      },
       "thinking_settings": {
         "title": "思考設定 (Thinking Settings)"
       },
@@ -1159,6 +1162,21 @@
       "agent_settings": {
         "title": "特定 Agent 設定 (Specific Agent Settings)"
       }
+    },
+    "stream_timeouts": {
+      "banner_title": "三階段串流梯度逾時與保活機制",
+      "banner_desc": "針對深度思考模型、超大上下文 Prefill、長歷史壓縮摘要及大檔案程式碼寫入場景，透過三階段獨立計時與全程底層心跳保活（: ping），徹底杜絕中間閘道切斷、過渡斷崖誤殺與客戶端重試死循環。",
+      "ttft_title": "首字回應寬限 (TTFT)",
+      "default_badge": "預設: 180s",
+      "ttft_desc": "涵蓋上游冷啟動排隊、超大提示詞 Prefill 與長歷史壓縮摘要任務的最大容忍時間。期間每 3 秒下發心跳保活。",
+      "transition_title": "狀態切換寬限 (全新輪迴)",
+      "transition_desc": "思考完畢至首個內文或工具調用出字的過渡期。思考結束時自適應重置計時器，為大檔案寫入等裝配留出充分時間。",
+      "sliding_title": "推流滑動逾時 (Streaming)",
+      "default_badge_sliding": "預設: 45s",
+      "sliding_desc": "持續吐字過程中相鄰 Token 的最大允許靜默間隔。若中途意外斷流超過此時長，自動優雅截斷收尾並保全已產生的程式碼。",
+      "toast_reset": "已恢復逾時設定預設值",
+      "btn_reset": "恢復預設值",
+      "btn_save": "儲存逾時設定"
     },
     "example": {
       "title": "使用示例",

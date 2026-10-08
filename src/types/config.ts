@@ -29,6 +29,13 @@ export interface ProxyConfig {
     only_raw_quota_models?: boolean; // [NEW] 是否只暴露真实配额模型
     proxy_pool?: ProxyPoolConfig;
     multimodal?: MultimodalConfig;
+    stream_timeouts?: StreamTimeoutConfig;
+}
+
+export interface StreamTimeoutConfig {
+    initial_ttft_secs?: number;
+    transition_secs?: number;
+    streaming_sliding_secs?: number;
 }
 
 export interface MultimodalConfig {

@@ -83,11 +83,12 @@ impl StreamLifecycleConfig {
         function_name: &'static str,
         trace_info: String,
     ) -> Self {
+        let timeouts = crate::proxy::get_stream_timeout_config();
         Self {
             heartbeat_secs: 3,
-            initial_ttft_secs: 180,
-            transition_secs: 180,
-            streaming_sliding_secs: 45,
+            initial_ttft_secs: timeouts.initial_ttft_secs,
+            transition_secs: timeouts.transition_secs,
+            streaming_sliding_secs: timeouts.streaming_sliding_secs,
             adapter_name,
             function_name,
             trace_info,

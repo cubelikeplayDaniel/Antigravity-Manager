@@ -1131,6 +1131,9 @@
         "guide_preset_cluster_title": "10K ~ 100K+ Massive Cluster:",
         "guide_preset_cluster_desc": "Recommended: <1>50 ~ 100 turns</1>. Effortlessly sustains tens of thousands of concurrent sessions; lock-free WAL index ensures sub-second responses."
       },
+      "stream_timeout_settings": {
+        "title": "Stream Timeout Settings"
+      },
       "thinking_settings": {
         "title": "Thinking Settings"
       },
@@ -1143,6 +1146,21 @@
       "agent_settings": {
         "title": "Specific Agent Settings"
       }
+    },
+    "stream_timeouts": {
+      "banner_title": "Three-Stage Gradient Stream Timeout & Keepalive",
+      "banner_desc": "Designed for deep thinking models, massive context Prefills, long history compaction, and heavy file writing. Provides three independent timing epochs with continuous background keepalive (: ping) to eliminate gateway drops, transition cliff timeouts, and client retry storms.",
+      "ttft_title": "Initial Response Grace (TTFT)",
+      "default_badge": "Default: 180s",
+      "ttft_desc": "Covers cold-start queueing, 100k+ token Prefill, and compaction summarization. Pings every 3s to keep connections alive.",
+      "transition_title": "Transition Grace (Epoch Reset)",
+      "transition_desc": "Grace period from thinking completion until the first content or tool call token appears. Automatically resets the timer when thinking ends.",
+      "sliding_title": "Streaming Sliding Timeout",
+      "default_badge_sliding": "Default: 45s",
+      "sliding_desc": "Maximum silence interval between consecutive stream tokens. If disrupted, gracefully seals the stream to protect generated output.",
+      "toast_reset": "Stream timeout settings restored to defaults",
+      "btn_reset": "Reset to Defaults",
+      "btn_save": "Save Timeout Settings"
     },
     "cloudflared": {
       "title": "Public Access (Cloudflared)",

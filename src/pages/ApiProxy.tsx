@@ -22,7 +22,8 @@ import {
     Edit2,
     Save,
     Share2,
-    Bot
+    Bot,
+    Timer
 } from 'lucide-react';
 import { AppConfig, ProxyConfig, StickySessionConfig, ExperimentalConfig } from '../types/config';
 import HelpTooltip from '../components/common/HelpTooltip';
@@ -38,6 +39,7 @@ import GlobalSystemPrompt from '../components/settings/GlobalSystemPrompt';
 import ImageThinkingMode from '../components/settings/ImageThinkingMode';
 import ThinkingBudget from '../components/settings/ThinkingBudget';
 import MultimodalSettings from '../components/settings/MultimodalSettings';
+import StreamTimeoutSettings from '../components/settings/StreamTimeoutSettings';
 import AgentSettings from '../components/settings/AgentSettings';
 import { CircuitBreakerConfig } from '../types/config';
 
@@ -2010,6 +2012,19 @@ print(response.choices[0].message.content)`;
                         {/* TAB: 模型配置 (models) */}
                         {activeMenuTab === 'models' && (
                             <div className="p-4 space-y-4">
+                                {/* 流式超时设置 (Stream Timeout Settings) - 默认收起 */}
+                                <CollapsibleCard
+                                    title={t('proxy.config.stream_timeout_settings.title', { defaultValue: '流式超时设置 (Stream Timeout Settings)' })}
+                                    icon={<Timer size={18} className="text-blue-500" />}
+                                    defaultExpanded={false}
+                                >
+                                    <StreamTimeoutSettings
+                                        config={appConfig.proxy.stream_timeouts}
+                                        onChange={(timeoutConfig) => updateProxyConfig({ stream_timeouts: timeoutConfig })}
+                                        onSave={handleSaveProxySettings}
+                                    />
+                                </CollapsibleCard>
+
                                 {/* 思考设置 (Thinking & Reasoning Settings) - 默认收起 */}
                                 <CollapsibleCard
                                     title={t('proxy.config.thinking_settings.title', { defaultValue: '思考设置 (Thinking Settings)' })}
