@@ -330,13 +330,14 @@ const TokenStats: React.FC = () => {
     };
 
     return (
-        <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.2, ease: "easeOut" }}
-            className="h-full w-full overflow-y-auto"
-        >
-            <div className="p-5 space-y-4 max-w-7xl mx-auto">
+        <div className="h-full w-full overflow-y-auto">
+            <motion.div
+                initial={{ opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
+                style={{ willChange: "opacity, transform" }}
+                className="p-5 space-y-4 max-w-7xl mx-auto"
+            >
                 <div className="flex items-center justify-between">
                     <h1 className="text-2xl font-bold text-gray-800 dark:text-white flex items-center gap-2">
                         <Zap className="w-6 h-6 text-blue-500" />
@@ -385,7 +386,7 @@ const TokenStats: React.FC = () => {
                     </div>
                 </div>
 
-                {summary && (
+                {summary ? (
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
                         <div className="bg-gradient-to-br from-white to-gray-50 dark:from-gray-800 dark:to-gray-800/50 rounded-xl p-4 shadow-sm border border-gray-200 dark:border-gray-700 hover:shadow-md transition-shadow">
                             <div className="flex items-center gap-2 text-gray-500 dark:text-gray-400 text-sm mb-2">
@@ -453,6 +454,18 @@ const TokenStats: React.FC = () => {
                                 {modelData.length}
                             </div>
                         </div>
+                    </div>
+                ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+                        {Array.from({ length: 6 }).map((_, idx) => (
+                            <div
+                                key={idx}
+                                className="bg-white/60 dark:bg-gray-800/60 rounded-xl p-4 border border-gray-200/50 dark:border-gray-700/50 animate-pulse h-[88px] flex flex-col justify-between"
+                            >
+                                <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded w-20"></div>
+                                <div className="h-7 bg-gray-200 dark:bg-gray-700 rounded w-28"></div>
+                            </div>
+                        ))}
                     </div>
                 )}
 
@@ -543,6 +556,7 @@ const TokenStats: React.FC = () => {
                                             stroke={viewMode === 'model' ? MODEL_COLORS[index % MODEL_COLORS.length] : COLORS[index % COLORS.length]}
                                             fill={viewMode === 'model' ? MODEL_COLORS[index % MODEL_COLORS.length] : COLORS[index % COLORS.length]}
                                             fillOpacity={0.6}
+                                            isAnimationActive={false}
                                         />
                                     ))}
                                 </AreaChart>
@@ -589,9 +603,9 @@ const TokenStats: React.FC = () => {
                                             allowEscapeViewBox={{ x: true, y: true }}
                                             wrapperStyle={{ zIndex: 100 }}
                                         />
-                                        <Bar dataKey="total_cached_tokens" name={t('token_stats.cached_token', '缓存命中')} stackId="input" fill="#93c5fd" radius={[0, 0, 4, 4]} maxBarSize={50} />
-                                        <Bar dataKey="uncached_input_tokens" name={t('token_stats.input', '输入')} stackId="input" fill="#3b82f6" radius={[4, 4, 0, 0]} maxBarSize={50} />
-                                        <Bar dataKey="total_output_tokens" name={t('token_stats.output', '输出')} fill="#8b5cf6" radius={[4, 4, 0, 0]} maxBarSize={50} />
+                                        <Bar dataKey="total_cached_tokens" name={t('token_stats.cached_token', '缓存命中')} stackId="input" fill="#93c5fd" radius={[0, 0, 4, 4]} maxBarSize={50} isAnimationActive={false} />
+                                        <Bar dataKey="uncached_input_tokens" name={t('token_stats.input', '输入')} stackId="input" fill="#3b82f6" radius={[4, 4, 0, 0]} maxBarSize={50} isAnimationActive={false} />
+                                        <Bar dataKey="total_output_tokens" name={t('token_stats.output', '输出')} fill="#8b5cf6" radius={[4, 4, 0, 0]} maxBarSize={50} isAnimationActive={false} />
                                     </BarChart>
                                 </ResponsiveContainer>
                             ) : (
@@ -621,6 +635,7 @@ const TokenStats: React.FC = () => {
                                             outerRadius={70}
                                             paddingAngle={2}
                                             dataKey="value"
+                                            isAnimationActive={false}
                                         >
                                             {pieData.map((entry, index) => (
                                                 <Cell key={`cell-${index}`} fill={entry.color} />
@@ -820,8 +835,8 @@ const TokenStats: React.FC = () => {
                         </div>
                     )
                 }
-            </div>
-        </motion.div>
+            </motion.div>
+        </div>
     );
 };
 
