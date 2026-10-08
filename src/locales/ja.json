@@ -1128,7 +1128,7 @@
       "transition_title": "状態遷移猶予 (エポックリセット)",
       "transition_desc": "思考完了から最初の本文またはツール呼び出し文字が出力されるまでの猶予期間。思考終了時に自動でタイマーをリセットします。",
       "sliding_title": "推流スライディングタイムアウト (Streaming)",
-      "default_badge_sliding": "デフォルト: 45s",
+      "default_badge_sliding": "デフォルト: 120s",
       "sliding_desc": "連続出力中の隣接トークン間の最大許容無応答時間。途中で通信が途絶えた場合、出力を保護して正常にクローズします。",
       "toast_reset": "タイムアウト設定をデフォルト値に戻しました",
       "btn_reset": "デフォルトに戻す",

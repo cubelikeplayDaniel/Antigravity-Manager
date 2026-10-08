@@ -1175,7 +1175,7 @@
       "transition_title": "Thời gian chuyển tiếp (Đặt lại bộ đếm)",
       "transition_desc": "Khoảng thời gian từ khi hoàn tất suy nghĩ đến khi xuất hiện nội dung hoặc lệnh gọi công cụ đầu tiên. Tự động đặt lại bộ đếm khi hoàn tất suy nghĩ.",
       "sliding_title": "Thời gian chờ trượt khi phát luồng (Streaming)",
-      "default_badge_sliding": "Mặc định: 45s",
+      "default_badge_sliding": "Mặc định: 120s",
       "sliding_desc": "Khoảng thời gian im lặng tối đa giữa các token liên tiếp. Nếu bị gián đoạn, luồng sẽ được đóng gọn gàng để bảo vệ nội dung đã tạo.",
       "toast_reset": "Đã khôi phục cài đặt thời gian chờ về mặc định",
       "btn_reset": "Khôi phục mặc định",

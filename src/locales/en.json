@@ -1156,7 +1156,7 @@
       "transition_title": "Transition Grace (Epoch Reset)",
       "transition_desc": "Grace period from thinking completion until the first content or tool call token appears. Automatically resets the timer when thinking ends.",
       "sliding_title": "Streaming Sliding Timeout",
-      "default_badge_sliding": "Default: 45s",
+      "default_badge_sliding": "Default: 120s",
       "sliding_desc": "Maximum silence interval between consecutive stream tokens. If disrupted, gracefully seals the stream to protect generated output.",
       "toast_reset": "Stream timeout settings restored to defaults",
       "btn_reset": "Reset to Defaults",

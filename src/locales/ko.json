@@ -1128,7 +1128,7 @@
       "transition_title": "상태 전환 유예 (타이머 리셋)",
       "transition_desc": "추론 완료 후 첫 본문 또는 도구 호출 토큰이 생성되기까지의 유예 시간입니다. 추론 종료 시 자동으로 타이머를 리셋합니다.",
       "sliding_title": "스트리밍 슬라이딩 타임아웃 (Streaming)",
-      "default_badge_sliding": "기본값: 45s",
+      "default_badge_sliding": "기본값: 120s",
       "sliding_desc": "연속 출력 중 인접 토큰 간 최대 허용 침묵 간격입니다. 비정상 단절 시 안전하게 세션을 마감하여 생성된 출력을 보존합니다.",
       "toast_reset": "타임아웃 설정을 기본값으로 복원했습니다",
       "btn_reset": "기본값 복원",

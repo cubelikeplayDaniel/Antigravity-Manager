@@ -513,7 +513,7 @@ where
         let mut heartbeat_interval = tokio::time::interval(std::time::Duration::from_secs(3));
         heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut last_activity = tokio::time::Instant::now();
-        const IDLE_TIMEOUT_SECS: u64 = 120;
+        let idle_timeout_secs = crate::proxy::get_stream_timeout_config().streaming_sliding_secs;
 
         loop {
             tokio::select! {
@@ -613,7 +613,7 @@ where
                     }
                 }
                 _ = heartbeat_interval.tick() => {
-                    if last_activity.elapsed() >= std::time::Duration::from_secs(IDLE_TIMEOUT_SECS) {
+                    if last_activity.elapsed() >= std::time::Duration::from_secs(idle_timeout_secs) {
                         let report = report_stream_error(
                             "openai-legacy",
                             "create_legacy_sse_stream",
@@ -623,12 +623,12 @@ where
                                 model,
                                 session_id,
                                 message_count,
-                                IDLE_TIMEOUT_SECS
+                                idle_timeout_secs
                             ),
                         );
                         tracing::warn!(
                             "[OpenAI-Legacy] Stream idle timeout after {}s (model={})",
-                            IDLE_TIMEOUT_SECS,
+                            idle_timeout_secs,
                             model
                         );
                         yield Ok::<Bytes, String>(Bytes::from(openai_chat_error_frame(
@@ -810,7 +810,7 @@ where
         let mut heartbeat_interval = tokio::time::interval(std::time::Duration::from_secs(3));
         heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut last_activity = tokio::time::Instant::now();
-        const IDLE_TIMEOUT_SECS: u64 = 120;
+        let idle_timeout_secs = crate::proxy::get_stream_timeout_config().streaming_sliding_secs;
 
         loop {
             tokio::select! {
@@ -1186,7 +1186,7 @@ where
                     }
                 }
                 _ = heartbeat_interval.tick() => {
-                    if last_activity.elapsed() >= std::time::Duration::from_secs(IDLE_TIMEOUT_SECS) {
+                    if last_activity.elapsed() >= std::time::Duration::from_secs(idle_timeout_secs) {
                         let report = report_stream_error(
                             "openai-codex",
                             "create_openai_codex_stream",
@@ -1196,12 +1196,12 @@ where
                                 model,
                                 session_id,
                                 message_count,
-                                IDLE_TIMEOUT_SECS
+                                idle_timeout_secs
                             ),
                         );
                         tracing::warn!(
                             "[Codex-SSE] Stream idle timeout after {}s (model={})",
-                            IDLE_TIMEOUT_SECS,
+                            idle_timeout_secs,
                             model
                         );
                         let err_ev = json!({
