@@ -265,8 +265,12 @@ fn populate_weekly_usage_with_conn(
 /// Get hourly aggregated stats for a time range
 pub fn get_hourly_stats(hours: i64) -> Result<Vec<TokenStatsAggregated>, String> {
     let conn = connect_db()?;
-    let cutoff = chrono::Local::now() - chrono::Duration::hours(hours);
-    let cutoff_bucket = cutoff.format("%Y-%m-%d %H:00").to_string();
+    let cutoff_bucket = if hours <= 0 {
+        String::new()
+    } else {
+        let cutoff = chrono::Local::now() - chrono::Duration::hours(hours);
+        cutoff.format("%Y-%m-%d %H:00").to_string()
+    };
 
     let mut stmt = conn
         .prepare(
@@ -306,8 +310,12 @@ pub fn get_hourly_stats(hours: i64) -> Result<Vec<TokenStatsAggregated>, String>
 /// Get daily aggregated stats for a time range
 pub fn get_daily_stats(days: i64) -> Result<Vec<TokenStatsAggregated>, String> {
     let conn = connect_db()?;
-    let cutoff = chrono::Local::now() - chrono::Duration::days(days);
-    let cutoff_bucket = cutoff.format("%Y-%m-%d").to_string();
+    let cutoff_bucket = if days <= 0 {
+        String::new()
+    } else {
+        let cutoff = chrono::Local::now() - chrono::Duration::days(days);
+        cutoff.format("%Y-%m-%d").to_string()
+    };
 
     let mut stmt = conn
         .prepare(
@@ -347,8 +355,12 @@ pub fn get_daily_stats(days: i64) -> Result<Vec<TokenStatsAggregated>, String> {
 /// Get weekly aggregated stats
 pub fn get_weekly_stats(weeks: i64) -> Result<Vec<TokenStatsAggregated>, String> {
     let conn = connect_db()?;
-    let cutoff = chrono::Local::now() - chrono::Duration::weeks(weeks);
-    let cutoff_timestamp = cutoff.timestamp();
+    let cutoff_timestamp = if weeks <= 0 {
+        0
+    } else {
+        let cutoff = chrono::Local::now() - chrono::Duration::weeks(weeks);
+        cutoff.timestamp()
+    };
 
     let mut stmt = conn
         .prepare(
@@ -388,8 +400,12 @@ pub fn get_weekly_stats(weeks: i64) -> Result<Vec<TokenStatsAggregated>, String>
 /// Get per-account statistics for a time range
 pub fn get_account_stats(hours: i64) -> Result<Vec<AccountTokenStats>, String> {
     let conn = connect_db()?;
-    let cutoff = chrono::Local::now() - chrono::Duration::hours(hours);
-    let cutoff_bucket = cutoff.format("%Y-%m-%d %H:00").to_string();
+    let cutoff_bucket = if hours <= 0 {
+        String::new()
+    } else {
+        let cutoff = chrono::Local::now() - chrono::Duration::hours(hours);
+        cutoff.format("%Y-%m-%d %H:00").to_string()
+    };
 
     let mut stmt = conn
         .prepare(
@@ -429,8 +445,12 @@ pub fn get_account_stats(hours: i64) -> Result<Vec<AccountTokenStats>, String> {
 /// Get summary statistics for a time range
 pub fn get_summary_stats(hours: i64) -> Result<TokenStatsSummary, String> {
     let conn = connect_db()?;
-    let cutoff = chrono::Local::now() - chrono::Duration::hours(hours);
-    let cutoff_bucket = cutoff.format("%Y-%m-%d %H:00").to_string();
+    let cutoff_bucket = if hours <= 0 {
+        String::new()
+    } else {
+        let cutoff = chrono::Local::now() - chrono::Duration::hours(hours);
+        cutoff.format("%Y-%m-%d %H:00").to_string()
+    };
 
     let (total_input, total_output, total_cached, total, requests): (u64, u64, u64, u64, u64) =
         conn.query_row(
@@ -474,7 +494,11 @@ pub fn get_summary_stats(hours: i64) -> Result<TokenStatsSummary, String> {
 
 pub fn get_model_stats(hours: i64) -> Result<Vec<ModelTokenStats>, String> {
     let conn = connect_db()?;
-    let cutoff = chrono::Local::now().timestamp() - (hours * 3600);
+    let cutoff = if hours <= 0 {
+        0
+    } else {
+        chrono::Local::now().timestamp() - (hours * 3600)
+    };
 
     let mut stmt = conn
         .prepare(
@@ -513,7 +537,11 @@ pub fn get_model_stats(hours: i64) -> Result<Vec<ModelTokenStats>, String> {
 
 pub fn get_model_trend_hourly(hours: i64) -> Result<Vec<ModelTrendPoint>, String> {
     let conn = connect_db()?;
-    let cutoff = chrono::Local::now().timestamp() - (hours * 3600);
+    let cutoff = if hours <= 0 {
+        0
+    } else {
+        chrono::Local::now().timestamp() - (hours * 3600)
+    };
 
     let mut stmt = conn
         .prepare(
@@ -553,7 +581,11 @@ pub fn get_model_trend_hourly(hours: i64) -> Result<Vec<ModelTrendPoint>, String
 
 pub fn get_model_trend_daily(days: i64) -> Result<Vec<ModelTrendPoint>, String> {
     let conn = connect_db()?;
-    let cutoff = chrono::Local::now().timestamp() - (days * 24 * 3600);
+    let cutoff = if days <= 0 {
+        0
+    } else {
+        chrono::Local::now().timestamp() - (days * 24 * 3600)
+    };
 
     let mut stmt = conn
         .prepare(
@@ -593,7 +625,11 @@ pub fn get_model_trend_daily(days: i64) -> Result<Vec<ModelTrendPoint>, String> 
 
 pub fn get_account_trend_hourly(hours: i64) -> Result<Vec<AccountTrendPoint>, String> {
     let conn = connect_db()?;
-    let cutoff = chrono::Local::now().timestamp() - (hours * 3600);
+    let cutoff = if hours <= 0 {
+        0
+    } else {
+        chrono::Local::now().timestamp() - (hours * 3600)
+    };
 
     let mut stmt = conn
         .prepare(
@@ -636,7 +672,11 @@ pub fn get_account_trend_hourly(hours: i64) -> Result<Vec<AccountTrendPoint>, St
 
 pub fn get_account_trend_daily(days: i64) -> Result<Vec<AccountTrendPoint>, String> {
     let conn = connect_db()?;
-    let cutoff = chrono::Local::now().timestamp() - (days * 24 * 3600);
+    let cutoff = if days <= 0 {
+        0
+    } else {
+        chrono::Local::now().timestamp() - (days * 24 * 3600)
+    };
 
     let mut stmt = conn
         .prepare(
