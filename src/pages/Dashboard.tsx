@@ -345,15 +345,13 @@ function Dashboard() {
     };
 
     return (
-        <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.2, ease: "easeOut" }}
-            className="h-full w-full overflow-y-auto"
-        >
-            <div
+        <div className="h-full w-full overflow-y-auto">
+            <motion.div
+                initial={{ opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
+                style={{ position: 'relative', zIndex: 1, willChange: 'opacity, transform' }}
                 className="p-5 space-y-4 max-w-7xl mx-auto"
-                style={{ position: 'relative', zIndex: 1 }}
             >
                 {/* 问候语和操作按钮 */}
                 <div
@@ -827,8 +825,8 @@ function Dashboard() {
                         <Download className="w-4 h-4 text-purple-400 dark:text-purple-500 group-hover:text-purple-600 dark:group-hover:text-purple-300 transition-all" />
                     </motion.button>
                 </div>
-            </div>
-        </motion.div>
+            </motion.div>
+        </div>
     );
 }
 
