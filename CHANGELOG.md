@@ -3,6 +3,11 @@
 > 完整版本历史记录。返回项目主页请查看 [README_ZH.md](README_ZH.md) | [English Changelog](CHANGELOG_EN.md)。
 
 *   **版本演进**:
+    *   **v4.9.7-beta.6 (2026-10-09)**:
+        -   **[403 验证封禁过期解封与账号接口透出验证链接] (PR #3632, Fixes #3630, Fixes #3631, Thanks to @zhouweirun)**:
+            -   **断开配额刷新 403 验证封禁自锁死循环**: 修复批量刷新配额逻辑（`refresh_all_quotas_logic`）跳过所有被封禁账号导致封禁过期后无法重新探测的环形依赖；当账号验证封禁已过冷却期后放行探测刷新，并在过期清理时同步重置 `quota.is_forbidden`。 (Fixes #3630, Thanks to @zhouweirun)
+            -   **AccountResponse 接口透出 validation_url**: 在 `AccountResponse` 数据结构及所有账号管理接口中透出已持久化的 `validation_url`，使前端验证错误弹窗可以直接获取有效验证地址，同时在封禁过期清理时对齐清空该字段。 (Fixes #3631, Thanks to @zhouweirun)
+
     *   **v4.9.7-beta.5 (2026-10-09)**:
         -   **[对齐上游新规废弃 Model 尾轮垫片，根治 AI 编码代理人机安全门击穿与死循环] (Fixes #3629)**:
             -   **废弃以 model 轮收尾时强行追加 user 垫片的防御逻辑**: 谷歌上游最新报文已允许请求最后一轮为 `model` / `assistant`。彻底废弃向尾部注入合成 user 轮次 (`"ok go on"`) 的历史防御逻辑，根治现代 AI 编码代理（如 Cline、OpenCode、Pi Agent、Claude Code 等）在人机交互安全确认门（如高危 Git 操作、问卷）中被网关伪造用户批准而直接击穿的问题，并消除多轮工具回执被 `"ok go on"` 污染导致的上下文膨胀与死循环。 (Fixes #3629)

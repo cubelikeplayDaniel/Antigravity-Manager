@@ -3,6 +3,11 @@
 > Complete version history for Antigravity Tools. Return to project home at [README.md](README.md).
 
 *   **Version History**:
+    *   **v4.9.7-beta.6 (2026-10-09)**:
+        -   **[Unblock 403 Validation Cooldown & Expose validation_url in Account APIs] (PR #3632, Fixes #3630, Fixes #3631, Thanks to @zhouweirun)**:
+            -   **Break Circular Deadlock in 403 Validation Quota Refresh**: Fixed circular dependency in `refresh_all_quotas_logic` where all forbidden accounts were strictly skipped, preventing accounts from ever being probed after cooldown expiration; expired accounts are now allowed to probe upstream quotas, and `quota.is_forbidden` is properly cleared during expiration cleanup. (Fixes #3630, Thanks to @zhouweirun)
+            -   **Expose validation_url in AccountResponse**: Exposed stored `validation_url` across `AccountResponse` and account admin endpoints so frontend error dialogs can directly present the unblock link, while aligning expiration cleanup to purge stale URLs. (Fixes #3631, Thanks to @zhouweirun)
+
     *   **v4.9.7-beta.5 (2026-10-09)**:
         -   **[Align Upstream Rules: Deprecate Model Terminal Turn Padding & Protect AI Coding Agent State Machines] (Fixes #3629)**:
             -   **Deprecate Trailing User Padding for Payloads Ending with Model Turn**: Aligned with Google upstream's latest protocol changes which allow requests ending with a `model` / `assistant` turn. Completely deprecated injecting synthetic user turns (`"ok go on"`) into trailing model turns. This eliminates issues where interactive AI Coding Agents (such as Cline, OpenCode, Pi Agent, Claude Code, etc.) waiting on human-in-the-loop confirmation gates (destructive Git operations, prompt questions) were bypassed by synthetic user approval, and prevents conversation history pollution and infinite loops caused by repeated `"ok go on"` injections after tool execution. (Fixes #3629)
