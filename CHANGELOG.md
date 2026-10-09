@@ -3,6 +3,18 @@
 > 完整版本历史记录。返回项目主页请查看 [README_ZH.md](README_ZH.md) | [English Changelog](CHANGELOG_EN.md)。
 
 *   **版本演进**:
+    *   **v4.9.7-beta.5 (2026-10-09)**:
+        -   **[对齐上游新规废弃 Model 尾轮垫片，根治 AI 编码代理人机安全门击穿与死循环] (Fixes #3629)**:
+            -   **废弃以 model 轮收尾时强行追加 user 垫片的防御逻辑**: 谷歌上游最新报文已允许请求最后一轮为 `model` / `assistant`。彻底废弃向尾部注入合成 user 轮次 (`"ok go on"`) 的历史防御逻辑，根治现代 AI 编码代理（如 Cline、OpenCode、Pi Agent、Claude Code 等）在人机交互安全确认门（如高危 Git 操作、问卷）中被网关伪造用户批准而直接击穿的问题，并消除多轮工具回执被 `"ok go on"` 污染导致的上下文膨胀与死循环。 (Fixes #3629)
+        -   **[精准移除轮换累计熔断与外层冗余超时并在首包重试时打破粘性死锁] (PR #3628, Fixes #3626, Ref PR #3622, PR #3625, Thanks to @cubelikeplayDaniel)**:
+            -   **移除账号轮换累计超时硬熔断**: 移除 `claude.rs` 与 `openai.rs` 轮换循环中基于 `request_start` 的 120s 累计熔断硬判断，消除多账号正常故障排查时被误判为 504 Gateway Timeout 的问题。 (Thanks to @cubelikeplayDaniel)
+            -   **移除 Claude 外层 120s 冗余流超时套娃**: 移除 `claude.rs` 最外层死写的 120s `tokio::time::timeout` 限制，将流式传输完全交由内层 `stream_lifecycle` 梯度超时管道自适应管理，保障大代码块与超长思考顺利完成。 (Thanks to @cubelikeplayDaniel)
+            -   **打破首包重试粘性死锁**: 在首包 Peek 超时重试处显式标记 `force_rotate = true`，强制轮换账号，根治粘性亲和停滞账号死锁。 (Thanks to @cubelikeplayDaniel)
+        -   **[根除中途断流伪截断收尾并延长稳态超时至 120s，如实透传网络异常保障客户端原生重试] (PR #3625, Ref #3621, PR #3622, Thanks to @cubelikeplayDaniel)**:
+            -   **彻底根除中途断流伪截断与伪造收尾**: 彻底移除 `emit_interruption_truncation` 及伪造 `message_stop` / `[DONE]` 逻辑，长连接发生中断或超时时如实向底层透传网络异常，确保 Claude Code CLI 等客户端能够立即感知并触发官方指数退避原生重试，杜绝虚假截断文本污染用户历史上下文。 (Thanks to @cubelikeplayDaniel)
+            -   **延长稳态推流滑动超时至 120 秒**: 将稳态推流滑动窗口超时由 45s 调整为 120s，为上游模型生成大代码块与长图元数据的内部预计算提供充裕时间，消除误杀断流。 (Thanks to @cubelikeplayDaniel)
+            -   **前端超时设置全面对齐 120s**: 前端超时设置全面对齐 120s 并消除 OpenAI 局部硬编码。 (Ref #3621, PR #3622, PR #3625)
+
     *   **v4.9.7-beta.4 (2026-10-08)**:
         -   **[彻底清除模型硬编码、全量官方结构体动态发现与幽灵模型 429 报错根治] (Fixes #3623)**:
             -   **全量官方模型结构体目录动态导出与零硬编码**: 在 `OfficialModelCatalog` 中新增 `all_model_ids()`，将 `get_supported_models` 中 40+ 个内置模型的静态 `vec![...]` 硬编码彻底清除，完全委托给权威官方模型结构体目录，实现模型列表的零硬编码动态维护。 (Fixes #3623)

@@ -3,6 +3,18 @@
 > Complete version history for Antigravity Tools. Return to project home at [README.md](README.md).
 
 *   **Version History**:
+    *   **v4.9.7-beta.5 (2026-10-09)**:
+        -   **[Align Upstream Rules: Deprecate Model Terminal Turn Padding & Protect AI Coding Agent State Machines] (Fixes #3629)**:
+            -   **Deprecate Trailing User Padding for Payloads Ending with Model Turn**: Aligned with Google upstream's latest protocol changes which allow requests ending with a `model` / `assistant` turn. Completely deprecated injecting synthetic user turns (`"ok go on"`) into trailing model turns. This eliminates issues where interactive AI Coding Agents (such as Cline, OpenCode, Pi Agent, Claude Code, etc.) waiting on human-in-the-loop confirmation gates (destructive Git operations, prompt questions) were bypassed by synthetic user approval, and prevents conversation history pollution and infinite loops caused by repeated `"ok go on"` injections after tool execution. (Fixes #3629)
+        -   **[Precisely Remove Account Rotation Timeout Fuses & Outer Redundant Timeouts; Break Sticky Deadlock on First Chunk Retry] (PR #3628, Fixes #3626, Ref PR #3622, PR #3625, Thanks to @cubelikeplayDaniel)**:
+            -   **Remove Account Rotation Cumulative Timeout Fuses**: Removed wall-clock cumulative 120s timeout fuses based on `request_start` in `claude.rs` and `openai.rs` retry loops, preventing false HTTP 504 Gateway Timeout errors during normal multi-account failover. (Thanks to @cubelikeplayDaniel)
+            -   **Remove Redundant Outer 120s Claude Stream Timeout**: Removed the hardcoded outer 120s `tokio::time::timeout` wrapper in `claude.rs`, fully delegating stream lifecycle to the inner staged gradient timeout pipeline and ensuring large code blocks and deep reasoning complete uninterrupted. (Thanks to @cubelikeplayDaniel)
+            -   **Break Sticky Session Deadlock on First-Chunk Timeout Retry**: Explicitly set `force_rotate = true` when first-chunk Peek times out, breaking sticky affinity deadlocks on stalled accounts. (Thanks to @cubelikeplayDaniel)
+        -   **[Eliminate Fake Truncation on Stream Interruption & Extend Sliding Timeout to 120s to Guarantee Native Client Retries] (PR #3625, Ref #3621, PR #3622, Thanks to @cubelikeplayDaniel)**:
+            -   **Eradicate Fake Truncation & Synthetic End Frames**: Completely removed `emit_interruption_truncation` and synthetic `message_stop` / `[DONE]` frames, transparently passing through connection resets and timeouts so downstream clients (such as Claude Code CLI) immediately trigger official exponential backoff retries without corrupting conversation history with fake truncation text. (Thanks to @cubelikeplayDaniel)
+            -   **Extend Steady-State Streaming Sliding Timeout to 120s**: Extended the sliding window idle timeout from 45s to 120s to provide ample buffer for complex upstream code block pre-computation, eliminating false cutoff. (Thanks to @cubelikeplayDaniel)
+            -   **Frontend Timeout Alignment to 120s**: Aligned frontend timeout settings to 120s and removed OpenAI localized hardcoded timeout values. (Ref #3621, PR #3622, PR #3625)
+
     *   **v4.9.7-beta.4 (2026-10-08)**:
         -   **[Eliminate Hardcoded Models, Dynamic Official Struct Discovery & Eradicate Phantom Model 429 Errors] (Fixes #3623)**:
             -   **Dynamic Official Model Catalog Export & Zero Hardcoding**: Added `all_model_ids()` in `OfficialModelCatalog` and completely removed the static `vec![...]` of 40+ models in `get_supported_models()`, delegating entirely to the authoritative official model catalog for zero-hardcoding maintenance. (Fixes #3623)
