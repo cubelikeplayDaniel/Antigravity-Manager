@@ -139,10 +139,16 @@ impl ProtocolStreamHandler for ClaudeStreamHandler {
     }
 
     fn emit_initial_error(&mut self, error_report: &StreamErrorReport) -> Vec<Bytes> {
+        let err_type =
+            if error_report.raw.contains("timeout") || error_report.raw.contains("overload") {
+                "overloaded_error"
+            } else {
+                "api_error"
+            };
         let error_json = serde_json::json!({
             "type": "error",
             "error": {
-                "type": "api_error",
+                "type": err_type,
                 "message": error_report.client_message(),
                 "function": error_report.function,
                 "call_site": error_report.call_site(),

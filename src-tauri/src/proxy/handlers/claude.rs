@@ -763,10 +763,9 @@ mod variant_tests {
 
     #[test]
     fn claude_model_without_variant_mapping_preserves_output_config_on_none() {
-        // claude-sonnet-4-5 is NOT in GEMINI_FAMILIES and NOT in
-        // resolve_non_variant_model, so resolve_with_tier returns None,
+        // Models without variant mapping or valid effort tiers return None,
         // and apply_variant returns None without mutating the request.
-        let mut request = request_with_effort("claude-sonnet-4-5", "high", 10_000);
+        let mut request = request_with_effort("custom-legacy-model", "unsupported", 10_000);
         let effort = crate::proxy::common::variant_mapping::tier_from_effort(
             request
                 .output_config
@@ -775,19 +774,16 @@ mod variant_tests {
         );
 
         let result = apply_variant(&mut request, effort, Some(10_000));
-        assert!(
-            result.is_none(),
-            "unregistered Claude model must return None"
-        );
+        assert!(result.is_none(), "unregistered model must return None");
 
         // Model and output_config must remain untouched.
-        assert_eq!(request.model, "claude-sonnet-4-5");
+        assert_eq!(request.model, "custom-legacy-model");
         assert_eq!(
             request
                 .output_config
                 .as_ref()
                 .and_then(|c| c.effort.as_deref()),
-            Some("high")
+            Some("unsupported")
         );
     }
 }
@@ -1663,8 +1659,6 @@ pub async fn handle_messages(
     let pool_size = token_manager.len();
     // [FIX #3485] 自适应多账号池与单账号退避最大重试次数 (单账号3次，多账号整池两轮)
     let max_attempts = super::common::calculate_max_retry_attempts(pool_size);
-    let request_timeout_secs = state.request_timeout;
-    let request_start = tokio::time::Instant::now();
 
     let mut last_error = String::new();
     let mut retried_without_thinking = false;
@@ -1681,21 +1675,6 @@ pub async fn handle_messages(
     let mut ttft_ms: f64 = 0.0;
 
     for attempt in 0..max_attempts {
-        // [FIX #3621] 全局请求预算硬熔断保护：多账号累计耗时超过配置的 request_timeout 时立刻熔断，杜绝 20+ 分钟轮换假死
-        if attempt > 0
-            && request_start.elapsed() >= std::time::Duration::from_secs(request_timeout_secs)
-        {
-            tracing::warn!(
-                "[{}] 全局请求超时熔断 (已耗时 {}s，历经 {} 次重试)，立即终止账号轮换",
-                trace_id,
-                request_timeout_secs,
-                attempt
-            );
-            last_status = StatusCode::GATEWAY_TIMEOUT;
-            last_error = format!("Global request timeout reached ({}s)", request_timeout_secs);
-            break;
-        }
-
         // [Stage 2 Timing] 中转归一计时起点
         let norm_start = std::time::Instant::now();
 
@@ -2157,6 +2136,7 @@ pub async fn handle_messages(
                 }
 
                 if retry_this_account {
+                    force_rotate = true;
                     continue;
                 }
 
@@ -2174,26 +2154,6 @@ pub async fn handle_messages(
                                     )),
                                 }
                             }));
-
-                        // [FIX #Bug1] 针对 Claude 流增加空闲超时保护，从 300s 降至 120s
-                        // 300s 会导致客户端等待长达 5 分钟；120s 仍有足够容错余量
-                        let combined_stream = async_stream::stream! {
-                            let mut s = Box::pin(combined_stream);
-                            loop {
-                                match tokio::time::timeout(std::time::Duration::from_secs(120), s.next()).await {
-                                    Ok(Some(item)) => yield item,
-                                    Ok(None) => break,
-                                    Err(_) => {
-                                        tracing::error!("[Claude-SSE] Idle timeout after 120s, terminating stream");
-                                        yield Err(std::io::Error::new(
-                                            std::io::ErrorKind::TimedOut,
-                                            "Stream idle timeout after 120s",
-                                        ));
-                                        break;
-                                    }
-                                }
-                            }
-                        };
 
                         // 判断客户端期望的格式
                         if client_wants_stream {
@@ -2645,18 +2605,6 @@ pub async fn handle_messages(
             attempt,
             pool_size,
         );
-
-        // [FIX #3621] 退避前检查全局超时预算，避免在超时后仍然等待退避时长
-        if request_start.elapsed() >= std::time::Duration::from_secs(request_timeout_secs) {
-            tracing::warn!(
-                "[{}] 全局请求超时熔断 (已耗时 {}s)，放弃退避并终止重试",
-                trace_id,
-                request_timeout_secs
-            );
-            last_status = StatusCode::GATEWAY_TIMEOUT;
-            last_error = format!("Global request timeout reached ({}s)", request_timeout_secs);
-            break;
-        }
 
         // 执行退避
         if apply_retry_strategy(

@@ -654,6 +654,7 @@ where
     Box::pin(stream)
 }
 
+#[track_caller]
 fn report_sse_json_parse(
     adapter: &'static str,
     function: &'static str,

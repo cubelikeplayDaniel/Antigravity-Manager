@@ -2909,8 +2909,10 @@ mod tests {
         // Set global config to Adaptive + High effort
         let config = ThinkingBudgetConfig {
             mode: crate::proxy::config::ThinkingBudgetMode::Adaptive,
+            claude_mode: crate::proxy::config::ThinkingBudgetMode::Custom,
             custom_value: 0,
             effort: Some("high".to_string()),
+            claude_high: 16384,
             ..Default::default()
         };
         crate::proxy::config::update_thinking_budget_config(config);
