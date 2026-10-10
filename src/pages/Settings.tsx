@@ -18,6 +18,7 @@ import { emit } from '@tauri-apps/api/event';
 
 import DebugConsole from '../components/debug/DebugConsole';
 import ProxyPoolSettings from '../components/settings/ProxyPoolSettings';
+import { motion } from 'framer-motion';
 
 function normalizeDataDirDisplay(path: string): string {
     const trimmed = path.trim();
@@ -471,7 +472,12 @@ function Settings() {
     };
 
     return (
-        <div className="h-full w-full overflow-y-auto">
+        <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.2, ease: "easeOut" }}
+            className="h-full w-full overflow-y-auto"
+        >
             <div className="p-5 space-y-4 max-w-7xl mx-auto">
                 {/* 顶部工具栏：Tab 导航和保存按钮 */}
                 <div className="flex justify-between items-center">
@@ -1998,8 +2004,8 @@ function Settings() {
                     </div>
                     <div className="modal-backdrop bg-black/60 backdrop-blur-md fixed inset-0 z-[-1]" onClick={() => setIsSupportModalOpen(false)}></div>
                 </div>
-            </div >
-        </div >
+            </div>
+        </motion.div>
     );
 }
 

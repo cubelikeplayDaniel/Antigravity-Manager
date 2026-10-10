@@ -34,6 +34,7 @@ import { useProxyModels } from '../hooks/useProxyModels';
 import GroupedSelect, { SelectOption } from '../components/common/GroupedSelect';
 import { CliSyncCard } from '../components/proxy/CliSyncCard';
 import { listAccounts } from '../services/accountService';
+import { motion } from 'framer-motion';
 import CircuitBreaker from '../components/settings/CircuitBreaker';
 import GlobalSystemPrompt from '../components/settings/GlobalSystemPrompt';
 import ImageThinkingMode from '../components/settings/ImageThinkingMode';
@@ -1477,7 +1478,12 @@ print(response.choices[0].message.content)`;
     };
 
     return (
-        <div className="h-full w-full overflow-y-auto overflow-x-hidden">
+        <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.2, ease: "easeOut" }}
+            className="h-full w-full overflow-y-auto overflow-x-hidden"
+        >
             <div className="p-5 space-y-4 max-w-7xl mx-auto">
 
                 {/* Loading State */}
@@ -2617,7 +2623,7 @@ print(response.choices[0].message.content)`;
                         </div>
                     </div>
                 </ModalDialog>
-            </div >
-        </div >
+            </div>
+        </motion.div>
     );
 }

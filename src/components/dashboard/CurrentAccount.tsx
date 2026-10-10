@@ -139,7 +139,7 @@ function CurrentAccount({ account, quotaView = 'weighted', onSwitch }: CurrentAc
     };
 
     return (
-        <div className="bg-white dark:bg-base-100 rounded-xl p-4 shadow-sm border border-gray-100 dark:border-base-200 h-full flex flex-col">
+        <div className="bg-white dark:bg-base-100 rounded-xl p-4 shadow-sm border border-gray-100 dark:border-base-200 h-full flex flex-col hover:shadow-md transition-shadow">
             <h2 className="text-base font-semibold text-gray-900 dark:text-base-content mb-3 flex items-center gap-2">
                 <CheckCircle className="w-4 h-4 text-green-500" />
                 {t('dashboard.current_account')}
@@ -223,7 +223,7 @@ function CurrentAccount({ account, quotaView = 'weighted', onSwitch }: CurrentAc
             {onSwitch && (
                 <div className="mt-auto pt-3">
                     <button
-                        className="w-full px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-base-300 rounded-lg hover:bg-gray-50 dark:hover:bg-base-200 transition-colors"
+                        className="w-full px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-base-300 rounded-lg hover:bg-gray-50 dark:hover:bg-base-200 active:scale-[0.98] transition-all cursor-pointer"
                         onClick={onSwitch}
                     >
                         {t('dashboard.switch_account')}

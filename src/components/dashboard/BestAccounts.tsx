@@ -155,7 +155,7 @@ function BestAccounts({ accounts, currentAccountId, onSwitch }: BestAccountsProp
     const bestClaudeRender = bestClaude ? { ...bestClaude, claudeQuota: bestClaude.quotaVal } : undefined;
 
     return (
-        <div className="bg-white dark:bg-base-100 rounded-xl p-4 shadow-sm border border-gray-100 dark:border-base-200 h-full flex flex-col">
+        <div className="bg-white dark:bg-base-100 rounded-xl p-4 shadow-sm border border-gray-100 dark:border-base-200 h-full flex flex-col hover:shadow-md transition-shadow">
             <h2 className="text-base font-semibold text-gray-900 dark:text-base-content mb-3 flex items-center gap-2">
                 <TrendingUp className="w-4 h-4 text-blue-500 dark:text-blue-400" />
                 {t('dashboard.best_accounts')}
@@ -202,7 +202,7 @@ function BestAccounts({ accounts, currentAccountId, onSwitch }: BestAccountsProp
             {(bestGeminiRender || bestClaudeRender) && onSwitch && (
                 <div className="mt-auto pt-3">
                     <button
-                        className="w-full px-3 py-1.5 bg-blue-500 text-white text-xs font-medium rounded-lg hover:bg-blue-600 transition-colors"
+                        className="w-full px-3 py-1.5 bg-blue-500 text-white text-xs font-medium rounded-lg hover:bg-blue-600 active:scale-[0.98] transition-all cursor-pointer"
                         onClick={() => {
                             // 优先切换到配额更高的账号
                             let targetId = bestGeminiRender?.id;
