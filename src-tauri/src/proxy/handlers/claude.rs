@@ -45,7 +45,7 @@ static COMPACTION_IMMUNITY_LEASES: LazyLock<DashMap<String, CompactionImmunityLe
     LazyLock::new(DashMap::new);
 
 const COMPACTION_IMMUNITY_INITIAL_TTL_SECS: u64 = 300;
-const COMPACTION_IMMUNITY_WINDOW_SECS: u64 = 60;
+const COMPACTION_IMMUNITY_WINDOW_SECS: u64 = 90;
 
 /// 压缩模式类型：区分手动 ./compact 指令驱动与自动超限自愈门禁驱动
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3883,9 +3883,9 @@ mod warmup_tests {
             "Lease must be marked as consumed"
         );
 
-        // Turn 2: Deep thinking / complex MCP tool calls taking 45s must remain valid under 60s sliding window
+        // Turn 2: Deep thinking / complex MCP tool calls taking 75s must remain valid under 90s sliding window
         if let Some(mut lease) = COMPACTION_IMMUNITY_LEASES.get_mut(&session_key) {
-            lease.last_touched = std::time::Instant::now() - std::time::Duration::from_secs(45);
+            lease.last_touched = std::time::Instant::now() - std::time::Duration::from_secs(75);
         }
         passed = false;
         if !is_compaction_req {
@@ -3906,12 +3906,12 @@ mod warmup_tests {
         }
         assert!(
             passed,
-            "Deep thinking turn taking 45s within 60s sliding window must pass through"
+            "Deep thinking turn taking 75s within 90s sliding window must pass through"
         );
 
-        // Expired lease after 65s window is evicted
+        // Expired lease after 95s window is evicted
         if let Some(mut lease) = COMPACTION_IMMUNITY_LEASES.get_mut(&session_key) {
-            lease.last_touched = std::time::Instant::now() - std::time::Duration::from_secs(65);
+            lease.last_touched = std::time::Instant::now() - std::time::Duration::from_secs(95);
         }
         passed = false;
         if !is_compaction_req {
@@ -4039,7 +4039,7 @@ mod warmup_tests {
             session_key.clone(),
             CompactionImmunityLease {
                 created_at: std::time::Instant::now() - std::time::Duration::from_secs(120),
-                last_touched: std::time::Instant::now() - std::time::Duration::from_secs(70),
+                last_touched: std::time::Instant::now() - std::time::Duration::from_secs(100),
                 consumed: true,
             },
         );
