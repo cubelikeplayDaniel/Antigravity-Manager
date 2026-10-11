@@ -45,7 +45,7 @@ static COMPACTION_IMMUNITY_LEASES: LazyLock<DashMap<String, CompactionImmunityLe
     LazyLock::new(DashMap::new);
 
 const COMPACTION_IMMUNITY_INITIAL_TTL_SECS: u64 = 300;
-const COMPACTION_IMMUNITY_WINDOW_SECS: u64 = 30;
+const COMPACTION_IMMUNITY_WINDOW_SECS: u64 = 60;
 
 /// 压缩模式类型：区分手动 ./compact 指令驱动与自动超限自愈门禁驱动
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,9 +116,9 @@ pub fn prune_just_compacted_cache_if_needed() {
 }
 
 /// 深度检测请求前几条消息是否包含 post-compaction continuation 接续标记
-/// 遍历前 3 条消息中所有的 Text 内容块，彻底解决 <system-reminder> 块遮挡接续标记导致漏检的问题
+/// 遍历前 5 条消息中所有的 Text 内容块，彻底解决 <system-reminder> 块遮挡接续标记导致漏检的问题
 pub fn detect_post_compaction_continuation(request: &ClaudeRequest) -> bool {
-    for m in request.messages.iter().take(3) {
+    for m in request.messages.iter().take(5) {
         match &m.content {
             crate::proxy::mappers::claude::models::MessageContent::String(s) => {
                 if crate::proxy::mappers::common_utils::is_post_compaction_continuation_text(s) {
@@ -3883,7 +3883,10 @@ mod warmup_tests {
             "Lease must be marked as consumed"
         );
 
-        // Turn 2: Concurrent request / tool call within 30s sliding window passes through
+        // Turn 2: Deep thinking / complex MCP tool calls taking 45s must remain valid under 60s sliding window
+        if let Some(mut lease) = COMPACTION_IMMUNITY_LEASES.get_mut(&session_key) {
+            lease.last_touched = std::time::Instant::now() - std::time::Duration::from_secs(45);
+        }
         passed = false;
         if !is_compaction_req {
             if let Some(mut lease) = COMPACTION_IMMUNITY_LEASES.get_mut(&session_key) {
@@ -3903,12 +3906,12 @@ mod warmup_tests {
         }
         assert!(
             passed,
-            "Concurrent turn within sliding window must pass through"
+            "Deep thinking turn taking 45s within 60s sliding window must pass through"
         );
 
-        // Expired lease after window is evicted
+        // Expired lease after 65s window is evicted
         if let Some(mut lease) = COMPACTION_IMMUNITY_LEASES.get_mut(&session_key) {
-            lease.last_touched = std::time::Instant::now() - std::time::Duration::from_secs(35);
+            lease.last_touched = std::time::Instant::now() - std::time::Duration::from_secs(65);
         }
         passed = false;
         if !is_compaction_req {
@@ -4035,8 +4038,8 @@ mod warmup_tests {
         COMPACTION_IMMUNITY_LEASES.insert(
             session_key.clone(),
             CompactionImmunityLease {
-                created_at: std::time::Instant::now() - std::time::Duration::from_secs(100),
-                last_touched: std::time::Instant::now() - std::time::Duration::from_secs(50),
+                created_at: std::time::Instant::now() - std::time::Duration::from_secs(120),
+                last_touched: std::time::Instant::now() - std::time::Duration::from_secs(70),
                 consumed: true,
             },
         );
@@ -4101,7 +4104,35 @@ mod warmup_tests {
             "Multi-block continuation must be detected even when preceded by system reminder"
         );
 
-        // Case 2: Negative case
+        // Case 2: Continuation text at 4th message (preceded by 3 system reminders / environment details)
+        let req_deep_continuation = ClaudeRequest {
+            model: "claude-3-7-sonnet".to_string(),
+            messages: vec![
+                Message {
+                    role: "user".to_string(),
+                    content: MessageContent::String("<system-reminder>Reminder 1</system-reminder>".to_string()),
+                },
+                Message {
+                    role: "user".to_string(),
+                    content: MessageContent::String("<system-reminder>Reminder 2</system-reminder>".to_string()),
+                },
+                Message {
+                    role: "user".to_string(),
+                    content: MessageContent::String("<environment_details>\nContext details\n</environment_details>".to_string()),
+                },
+                Message {
+                    role: "user".to_string(),
+                    content: MessageContent::String("This session is being continued from a previous conversation that ran out of context.\n\n<summary>Done</summary>".to_string()),
+                },
+            ],
+            ..Default::default()
+        };
+        assert!(
+            detect_post_compaction_continuation(&req_deep_continuation),
+            "Continuation text at 4th message must be detected when preceded by 3 metadata messages"
+        );
+
+        // Case 3: Negative case
         let req_normal = ClaudeRequest {
             model: "claude-3-7-sonnet".to_string(),
             messages: vec![Message {
