@@ -197,15 +197,13 @@ fn is_manual_compact_command(request: &ClaudeRequest) -> bool {
     false
 }
 
-/// 判断当前请求是否属于 Claude Desktop Cowork 专属会话
-/// 关键防护：严格排除 Claude Code 模式（CLI / Desktop Code Tab），防止日常代码工程被误触截断。
-/// 仅精准放行真正的 Cowork 模式（带 mcp__cowork_* / mcp__workspace_* 工具或 local-agent 运行环境）。
-pub fn is_cowork_session(request: &ClaudeRequest, headers: &HeaderMap) -> bool {
-    // 1. 显式排除 Claude Code 模式（一票否决权）：
-    // 关键认知：Claude Desktop 的 Cowork 模式底层同样基于 agent-sdk，也会携带 x-app: cli、x-claude-code-session-id
-    // 以及通用宿主标头 claude-desktop-3p（代表 3p 嵌入桌面宿主），因此绝不能用这些通用标头判定 Code 模式！
-    // 真正的 Code 模式专属特征为：包含 mcp__ccd_* 工具前缀，或系统提示词显式声明 "You are Claude Code"
-    let is_code_mode = request.tools.as_ref().map_or(false, |tools| {
+/// 判断当前请求是否属于 Claude Code 模式（CLI / Desktop Code Tab）
+///
+/// 判定依据（与 Cowork 排除判定完全对齐）：
+/// 1. 工具声明包含 `mcp__ccd_` 前缀（Claude Desktop Code Tab 专属工具）；
+/// 2. 或系统提示词显式声明包含 "You are Claude Code"（Claude Code CLI 官方身份）。
+pub fn is_code_mode(request: &ClaudeRequest) -> bool {
+    request.tools.as_ref().map_or(false, |tools| {
         tools.iter().any(|t| t.get_name().starts_with("mcp__ccd_"))
     }) || request.system.as_ref().map_or(false, |sys| match sys {
         crate::proxy::mappers::claude::models::SystemPrompt::String(s) => {
@@ -214,9 +212,18 @@ pub fn is_cowork_session(request: &ClaudeRequest, headers: &HeaderMap) -> bool {
         crate::proxy::mappers::claude::models::SystemPrompt::Array(arr) => {
             arr.iter().any(|b| b.text.contains("You are Claude Code"))
         }
-    });
+    })
+}
 
-    if is_code_mode {
+/// 判断当前请求是否属于 Claude Desktop Cowork 专属会话
+/// 关键防护：严格排除 Claude Code 模式（CLI / Desktop Code Tab），防止日常代码工程被误触截断。
+/// 仅精准放行真正的 Cowork 模式（带 mcp__cowork_* / mcp__workspace_* 工具或 local-agent 运行环境）。
+pub fn is_cowork_session(request: &ClaudeRequest, headers: &HeaderMap) -> bool {
+    // 1. 显式排除 Claude Code 模式（一票否决权）：
+    // 关键认知：Claude Desktop 的 Cowork 模式底层同样基于 agent-sdk，也会携带 x-app: cli、x-claude-code-session-id
+    // 以及通用宿主标头 claude-desktop-3p（代表 3p 嵌入桌面宿主），因此绝不能用这些通用标头判定 Code 模式！
+    // 真正的 Code 模式专属特征为：包含 mcp__ccd_* 工具前缀，或系统提示词显式声明 "You are Claude Code"
+    if is_code_mode(request) {
         return false;
     }
 
@@ -1099,7 +1106,13 @@ pub async fn handle_messages(
 
     // [NEW] 获取上下文控制配置
     let experimental = state.experimental.read().await;
-    let scaling_enabled = experimental.enable_usage_scaling;
+    // 关键防护（方案 A）：Claude Code (CLI / Desktop Code Tab) 具备原生的主动滑动窗口压缩机制 (/compact)，
+    // 其内部通过 input_tokens 占比达到 ~95% 上限触发自动压缩。
+    // 若对其开启用量缩放，会将百万级物理 Token 压缩映射至假性偏低的数值区间（如 500k 映射为 58k），
+    // 导致客户端永远无法感知真实上下文压力、丧失主动 /compact 触发时机，并在触及服务端硬限制时骤然崩溃 (Fixes #867, #1066, #1079)。
+    // 因此：若检测为 Claude Code 会话，强制关闭用量缩放，如实下发真实物理 Token 用量。
+    let is_code = is_code_mode(&request);
+    let scaling_enabled = experimental.enable_usage_scaling && !is_code;
 
     // [全链路会话生命周期与自愈分流体系 (Pipeline First)]
     // 提取会话唯一标识（优先提取产品专属会话头或内容锚点）
@@ -4557,5 +4570,76 @@ mod warmup_tests {
         // 3. 差额足以让客户端 last_turn_tokens (~1000) 使得 Ne = gap - last_turn <= 0，
         // 从而直接跳过 CHt 倒算二分折半保护，实现深度全量压缩
         assert!(gap < 1_000);
+    }
+
+    #[test]
+    fn test_is_code_mode_detection_and_scaling_bypass() {
+        use crate::proxy::mappers::claude::models::{SystemBlock, SystemPrompt, Tool};
+
+        // 1. Claude Code CLI via SystemPrompt::String
+        let req_cli_string = ClaudeRequest {
+            system: Some(SystemPrompt::String(
+                "You are Claude Code, Anthropic's official CLI for Claude.".to_string(),
+            )),
+            ..Default::default()
+        };
+        assert!(is_code_mode(&req_cli_string));
+
+        // 2. Claude Code CLI via SystemPrompt::Array
+        let req_cli_array = ClaudeRequest {
+            system: Some(SystemPrompt::Array(vec![SystemBlock {
+                block_type: "text".to_string(),
+                text: "You are Claude Code, Anthropic's official CLI for Claude.".to_string(),
+            }])),
+            ..Default::default()
+        };
+        assert!(is_code_mode(&req_cli_array));
+
+        // 3. Claude Desktop Code Tab via mcp__ccd_* tool prefix
+        let req_desktop_code = ClaudeRequest {
+            tools: Some(vec![Tool {
+                type_: None,
+                name: Some("mcp__ccd_host__sync_with_base_branch".to_string()),
+                description: None,
+                input_schema: None,
+            }]),
+            ..Default::default()
+        };
+        assert!(is_code_mode(&req_desktop_code));
+
+        // 4. Regular chat request (should NOT be code mode)
+        let req_regular = ClaudeRequest {
+            system: Some(SystemPrompt::String(
+                "You are a helpful assistant.".to_string(),
+            )),
+            ..Default::default()
+        };
+        assert!(!is_code_mode(&req_regular));
+
+        // 5. Cowork session request (should NOT be code mode)
+        let req_cowork = ClaudeRequest {
+            tools: Some(vec![Tool {
+                type_: None,
+                name: Some("mcp__cowork__create_artifact".to_string()),
+                description: None,
+                input_schema: None,
+            }]),
+            ..Default::default()
+        };
+        assert!(!is_code_mode(&req_cowork));
+
+        // 6. Test scaling bypass invariant (Option A):
+        // When enable_usage_scaling is true:
+        // - Regular request -> scaling_enabled remains true
+        // - Code mode request -> scaling_enabled MUST be bypassed (forced false)
+        let enable_usage_scaling = true;
+        let scaling_for_regular = enable_usage_scaling && !is_code_mode(&req_regular);
+        assert!(scaling_for_regular);
+
+        let scaling_for_cli = enable_usage_scaling && !is_code_mode(&req_cli_string);
+        assert!(!scaling_for_cli);
+
+        let scaling_for_desktop_code = enable_usage_scaling && !is_code_mode(&req_desktop_code);
+        assert!(!scaling_for_desktop_code);
     }
 }
