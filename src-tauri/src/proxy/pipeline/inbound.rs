@@ -826,6 +826,14 @@ impl InboundThinkingPipeline {
                 && !has_fr(p)
                 && p.get("functionCall").is_none()
         }
+        /// part 是否为系统注入的提醒文本（如 Claude Code 的 <system-reminder>）
+        fn is_system_reminder(p: &Value) -> bool {
+            p.get("text").and_then(|t| t.as_str()).is_some_and(|s| {
+                s.contains("<system-reminder>")
+                    || s.contains("<system-instruction>")
+                    || s.contains("<environment_details>")
+            })
+        }
 
         let mut rewritten = 0usize;
         let mut out: Vec<Value> = Vec::with_capacity(contents.len());
@@ -851,22 +859,74 @@ impl InboundThinkingPipeline {
                 continue;
             }
 
+            // [FIX #3634 Gemini 工具链闭环保全]
+            // 当目标协议为 Gemini (target_role == "model") 时：
+            // 若回执轮伴随有系统注入的提醒文本（如 Claude Code CLI 附带的 <system-reminder>），
+            // 绝不可将该提醒拆分为悬挂在末尾的独立 role: "user" 轮次！
+            // 悬挂的末尾 user 轮次会直接打断 Gemini 的工具调用状态机，导致模型误判为用户新一轮对话而吐出极短字符后草率终止。
+            // 统一将伴随的系统提醒文本无缝折叠入最后一个 functionResponse 的 response.output 中，
+            // 既完整保留上下文感知与 KV Cache 稳定性，又维持纯净的 role: "model" 回执收尾，确保工具链持续驱动。
+            let mut parts = parts;
+            if target_role == "model" && parts.iter().any(is_system_reminder) {
+                let mut reminders = Vec::new();
+                parts.retain(|p| {
+                    if is_system_reminder(p) {
+                        if let Some(t) = p.get("text").and_then(|t| t.as_str()) {
+                            reminders.push(t.to_string());
+                        }
+                        false
+                    } else {
+                        true
+                    }
+                });
+
+                if !reminders.is_empty() {
+                    let combined = reminders.join("\n\n");
+                    if let Some(fr) = parts.iter_mut().rev().find(|p| has_fr(p)) {
+                        if let Some(fr_obj) = fr
+                            .get_mut("functionResponse")
+                            .and_then(|f| f.as_object_mut())
+                        {
+                            let resp = fr_obj.entry("response").or_insert_with(|| json!({}));
+                            if let Some(resp_obj) = resp.as_object_mut() {
+                                if let Some(out_val) = resp_obj.get_mut("output") {
+                                    if let Some(out_str) = out_val.as_str() {
+                                        *out_val = json!(format!("{}\n\n{}", out_str, combined));
+                                    } else {
+                                        resp_obj
+                                            .insert("system_reminder".to_string(), json!(combined));
+                                    }
+                                } else {
+                                    resp_obj.insert("output".to_string(), json!(combined));
+                                }
+                            }
+                        }
+                    }
+                    rewritten += 1;
+                }
+            }
+
             let all_response = parts.iter().all(|p| has_fr(p) || is_media(p));
 
             // 已经是目标角色且为纯回执轮，无需改写，直接流入聚合阶段
             if role == target_role && all_response {
-                out.push(content);
+                let mut c = content;
+                c["parts"] = json!(parts);
+                out.push(c);
                 continue;
             }
 
             // 纯回执轮：改写 role 为 target_role
             if all_response {
                 if target_role == "model" && out.is_empty() {
-                    out.push(content);
+                    let mut c = content;
+                    c["parts"] = json!(parts);
+                    out.push(c);
                     continue;
                 }
                 let mut c = content;
                 c["role"] = json!(target_role);
+                c["parts"] = json!(parts);
                 out.push(c);
                 rewritten += 1;
                 continue;
@@ -2585,6 +2645,40 @@ mod tests {
         assert_eq!(contents[2]["parts"][0]["text"], "顺便说明");
         assert_eq!(contents[3]["role"], "model");
         assert!(contents[3]["parts"][0].get("functionResponse").is_some());
+    }
+
+    #[test]
+    fn test_fr_role_with_trailing_system_reminder_folds_into_response_without_dangling_user_turn() {
+        let reminder_text = "<system-reminder>\nBefore the user's request for this turn, the system provides the following reminder for your awareness:\n<total_tokens>14999685 tokens left</total_tokens>\n</system-reminder>";
+        let mut contents = vec![
+            json!({"role": "user", "parts": [{"text": "check process"}]}),
+            json!({"role": "model", "parts": [fc_part("c1", "Bash")]}),
+            json!({
+                "role": "user",
+                "parts": [
+                    fr_part("c1", "Bash"),
+                    {"text": reminder_text}
+                ]
+            }),
+        ];
+        InboundThinkingPipeline::normalize_function_response_roles(
+            &mut contents,
+            "gemini-3.8-flash-low",
+        );
+        // 核心契约：工具回执伴随的系统提示绝不可拆为悬挂在末尾的独立 user 轮次！
+        // 整个会话必须以包含 functionResponse 的 model 轮次收尾，以维持 Gemini 工具链闭环。
+        assert_eq!(
+            contents.len(),
+            3,
+            "应折叠为 3 轮，杜绝产生悬挂的第 4 轮 user 消息"
+        );
+        assert_eq!(contents[2]["role"], "model");
+        let fr = &contents[2]["parts"][0]["functionResponse"];
+        let output = fr["response"]["output"].as_str().expect("output string");
+        assert!(
+            output.contains(reminder_text),
+            "系统提醒内容必须完整保留在工具回执 output 内部"
+        );
     }
 
     /// 回执附带图片：`user [fr, inlineData]` → `model [fr]` + `user [inlineData]`，

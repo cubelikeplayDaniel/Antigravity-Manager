@@ -843,6 +843,17 @@ fn claude_stream_chunk_has_error_event(bytes: &[u8]) -> bool {
     false
 }
 
+/// [Issue #3634] 规范化 Claude 协议的 HTTP 错误状态码。
+/// 1. HTTP 529 统一转为 HTTP 429：避免触发 Claude Code PB(an) 的过载降级状态机（强制关闭 fastMode 并进入 10~30 分钟过载冷却）；
+/// 2. HTTP 403 统一转为 HTTP 503：避免 Claude Code 客户端误判为鉴权失效并强制退出登录。
+pub(crate) fn normalize_claude_error_status(status_code: u16) -> StatusCode {
+    match status_code {
+        403 => StatusCode::SERVICE_UNAVAILABLE,
+        529 => StatusCode::TOO_MANY_REQUESTS,
+        code => StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
 /// 处理 Claude messages 请求
 ///
 /// 处理 Chat 消息请求流程
@@ -1674,9 +1685,47 @@ pub async fn handle_messages(
     let mut think_fill_ms: f64 = 0.0;
     let mut ttft_ms: f64 = 0.0;
 
+    let request_start = tokio::time::Instant::now();
+    let global_deadline = request_start
+        + std::time::Duration::from_secs(super::common::MAX_GATEWAY_REQUEST_BUDGET_SECS);
+
     for attempt in 0..max_attempts {
         // [Stage 2 Timing] 中转归一计时起点
         let norm_start = std::time::Instant::now();
+
+        // 检查全局请求预算：严格防止内部轮换时间逼近客户端 300s 看门狗超时
+        let now = tokio::time::Instant::now();
+        if now >= global_deadline {
+            tracing::warn!(
+                "[{}] Claude 请求全局预算耗尽（{}s，共经历 {} 次尝试），终止重试以杜绝触发客户端 5 分钟超时看门狗",
+                trace_id,
+                super::common::MAX_GATEWAY_REQUEST_BUDGET_SECS,
+                attempt
+            );
+            if last_status == StatusCode::SERVICE_UNAVAILABLE || last_status == StatusCode::OK {
+                last_status = StatusCode::GATEWAY_TIMEOUT;
+            }
+            if last_error.is_empty() {
+                last_error = format!(
+                    "Gateway global request budget exceeded ({}s)",
+                    super::common::MAX_GATEWAY_REQUEST_BUDGET_SECS
+                );
+            }
+            break;
+        }
+
+        let remaining_global_secs = (global_deadline - now).as_secs();
+        if remaining_global_secs < 5 {
+            tracing::warn!(
+                "[{}] Claude 请求全局预算剩余不足 5s ({}s left)，安全退出重试循环",
+                trace_id,
+                remaining_global_secs
+            );
+            if last_status == StatusCode::SERVICE_UNAVAILABLE || last_status == StatusCode::OK {
+                last_status = StatusCode::GATEWAY_TIMEOUT;
+            }
+            break;
+        }
 
         // 2. 模型路由解析
         let mapped_model = crate::proxy::common::model_mapping::resolve_model_route_with_effort(
@@ -1750,11 +1799,13 @@ pub async fn handle_messages(
                 } else {
                     e
                 };
-                let headers = crate::proxy::handlers::common::build_token_error_headers(
-                    Some(mapped_model.as_str()),
-                    None,
-                    &safe_message,
-                );
+                let headers =
+                    crate::proxy::handlers::common::build_token_error_headers_for_protocol(
+                        "claude",
+                        Some(mapped_model.as_str()),
+                        None,
+                        &safe_message,
+                    );
                 let dual_err = crate::proxy::handlers::common::build_dual_track_error(
                     "claude",
                     StatusCode::SERVICE_UNAVAILABLE.as_u16(),
@@ -2042,11 +2093,59 @@ pub async fn handle_messages(
                     registered_tool_names, // [FIX #MCP] Pass tool names for fuzzy matching
                 );
 
+                // [FIX #3634 对齐 Anthropic 官方规范并彻底杜绝网关静默超时]
+                // 当客户端明确请求流式模式 (stream=true) 时：
+                // 严禁在此处进行阻塞式 Peek 预读缓冲与心跳丢弃！
+                // 上游已经成功建立连接返回 HTTP 200，网关必须立即向客户端返回 HTTP 200 与 text/event-stream 响应头，
+                // 并由 stream_lifecycle 驱动器每 3 秒实时下发官方 SSE ping 心跳 (`event: ping\ndata: {"type": "ping"}\n\n`)。
+                // 这确保下游客户端（Claude Code 等）看门狗持续被心跳保活，绝不会因 Prefill 或推理思考等待触发 5 分钟无响应断连 (CLI error 'Request timed out')。
+                if client_wants_stream {
+                    ttft_ms = upstream_req_start.elapsed().as_micros() as f64 / 1000.0;
+                    let stream_mapped =
+                        claude_stream.map(|result| -> Result<Bytes, std::io::Error> {
+                            match result {
+                                Ok(b) => Ok(b),
+                                Err(e) => {
+                                    Err(std::io::Error::new(std::io::ErrorKind::ConnectionReset, e))
+                                }
+                            }
+                        });
+
+                    return Response::builder()
+                        .status(StatusCode::OK)
+                        .header(header::CONTENT_TYPE, "text/event-stream")
+                        .header(header::CACHE_CONTROL, "no-cache")
+                        .header(header::CONNECTION, "keep-alive")
+                        .header("X-Accel-Buffering", "no")
+                        .header("X-Account-Email", &email)
+                        .header("X-Mapped-Model", &request_with_mapped.model)
+                        .header("X-Session-Id", &client_session_id)
+                        .header("X-Antigravity-Session-Id", &client_session_id)
+                        .header("X-Context-Purified", "false")
+                        .header("X-Timing-Clean-Ms", format!("{:.3}", clean_ms))
+                        .header("X-Timing-Norm-Ms", format!("{:.3}", norm_ms))
+                        .header("X-Timing-Thinking-Ms", format!("{:.3}", think_fill_ms))
+                        .header("X-Timing-Ttft-Ms", format!("{:.3}", ttft_ms))
+                        .body(Body::from_stream(stream_mapped))
+                        .unwrap();
+                }
+
                 let mut first_data_chunk = None;
                 let mut retry_this_account = false;
 
-                // Loop to skip heartbeats during peek
-                let peek_timeout_secs = if is_compaction_request { 180 } else { 30 };
+                // Loop to skip heartbeats during peek (for non-streaming requests)
+                // [FIX #3634] 动态自适应计算 Peek 超时时间，并受全局剩余请求预算严格约束，
+                // 彻底杜绝大 Prompt 预热（TTFT > 30s）被误杀，同时杜绝累积超时触发客户端 5 分钟看门狗
+                let base_peek_secs = super::common::calculate_adaptive_peek_timeout(
+                    is_compaction_request,
+                    false,
+                    Some(raw_estimated),
+                );
+                let current_remaining_secs = global_deadline
+                    .saturating_duration_since(tokio::time::Instant::now())
+                    .as_secs();
+                let peek_timeout_secs =
+                    base_peek_secs.min(current_remaining_secs.saturating_sub(2).max(5));
                 // [FIX #3621] 采用固定截止时间点，杜绝遇到心跳 : ping 时刷新重置 30s 倒计时导致的 100s 死等死循环
                 let peek_deadline =
                     tokio::time::Instant::now() + std::time::Duration::from_secs(peek_timeout_secs);
@@ -2080,7 +2179,10 @@ pub async fn handle_messages(
 
                             let text = String::from_utf8_lossy(&bytes);
                             // Skip SSE comments/pings
-                            if text.trim().starts_with(":") {
+                            if text.trim().starts_with(":")
+                                || text.contains("\"type\":\"ping\"")
+                                || text.contains("\"type\": \"ping\"")
+                            {
                                 debug!("[{}] Skipping peek heartbeat: {}", trace_id, text.trim());
                                 continue;
                             }
@@ -2155,66 +2257,38 @@ pub async fn handle_messages(
                                 }
                             }));
 
-                        // 判断客户端期望的格式
-                        if client_wants_stream {
-                            // 客户端本就要 Stream，直接返回 SSE
-                            return Response::builder()
-                                .status(StatusCode::OK)
-                                .header(header::CONTENT_TYPE, "text/event-stream")
-                                .header(header::CACHE_CONTROL, "no-cache")
-                                .header(header::CONNECTION, "keep-alive")
-                                .header("X-Accel-Buffering", "no")
-                                .header("X-Account-Email", &email)
-                                .header("X-Mapped-Model", &request_with_mapped.model)
-                                .header("X-Session-Id", &client_session_id)
-                                .header("X-Antigravity-Session-Id", &client_session_id)
-                                .header("X-Context-Purified", "false")
-                                .header("X-Timing-Clean-Ms", format!("{:.3}", clean_ms))
-                                .header("X-Timing-Norm-Ms", format!("{:.3}", norm_ms))
-                                .header("X-Timing-Thinking-Ms", format!("{:.3}", think_fill_ms))
-                                .header("X-Timing-Ttft-Ms", format!("{:.3}", ttft_ms))
-                                .body(Body::from_stream(combined_stream))
-                                .unwrap();
-                        } else {
-                            // 客户端要非 Stream，需要收集完整响应并转换为 JSON
-                            use crate::proxy::mappers::claude::collect_stream_to_json;
+                        // 客户端要非 Stream，需要收集完整响应并转换为 JSON
+                        use crate::proxy::mappers::claude::collect_stream_to_json;
 
-                            match collect_stream_to_json(Box::pin(combined_stream)).await {
-                                Ok(full_response) => {
-                                    info!(
-                                        "[{}] ✓ Stream collected and converted to JSON",
-                                        trace_id
-                                    );
-                                    return Response::builder()
-                                        .status(StatusCode::OK)
-                                        .header(header::CONTENT_TYPE, "application/json")
-                                        .header("X-Account-Email", &email)
-                                        .header("X-Mapped-Model", &request_with_mapped.model)
-                                        .header("X-Session-Id", &client_session_id)
-                                        .header("X-Antigravity-Session-Id", &client_session_id)
-                                        .header("X-Context-Purified", "false")
-                                        .header("X-Timing-Clean-Ms", format!("{:.3}", clean_ms))
-                                        .header("X-Timing-Norm-Ms", format!("{:.3}", norm_ms))
-                                        .header(
-                                            "X-Timing-Thinking-Ms",
-                                            format!("{:.3}", think_fill_ms),
-                                        )
-                                        .header("X-Timing-Ttft-Ms", format!("{:.3}", ttft_ms))
-                                        .body(Body::from(
-                                            serde_json::to_string(&full_response).unwrap(),
-                                        ))
-                                        .unwrap();
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
+                        match collect_stream_to_json(Box::pin(combined_stream)).await {
+                            Ok(full_response) => {
+                                info!("[{}] ✓ Stream collected and converted to JSON", trace_id);
+                                return Response::builder()
+                                    .status(StatusCode::OK)
+                                    .header(header::CONTENT_TYPE, "application/json")
+                                    .header("X-Account-Email", &email)
+                                    .header("X-Mapped-Model", &request_with_mapped.model)
+                                    .header("X-Session-Id", &client_session_id)
+                                    .header("X-Antigravity-Session-Id", &client_session_id)
+                                    .header("X-Context-Purified", "false")
+                                    .header("X-Timing-Clean-Ms", format!("{:.3}", clean_ms))
+                                    .header("X-Timing-Norm-Ms", format!("{:.3}", norm_ms))
+                                    .header("X-Timing-Thinking-Ms", format!("{:.3}", think_fill_ms))
+                                    .header("X-Timing-Ttft-Ms", format!("{:.3}", ttft_ms))
+                                    .body(Body::from(
+                                        serde_json::to_string(&full_response).unwrap(),
+                                    ))
+                                    .unwrap();
+                            }
+                            Err(e) => {
+                                tracing::warn!(
                                         "[{}] Stream collection error (possibly upstream interrupted): {}, retrying with another account...",
                                         trace_id,
                                         e
                                     );
-                                    last_error = format!("Stream collection error: {}", e);
-                                    force_rotate = true;
-                                    continue;
-                                }
+                                last_error = format!("Stream collection error: {}", e);
+                                force_rotate = true;
+                                continue;
                             }
                         }
                     }
@@ -2633,110 +2707,39 @@ pub async fn handle_messages(
                 "[{}] Non-retryable error {}: {}",
                 trace_id, status_code, error_text
             );
+            let response_status = normalize_claude_error_status(status_code);
+            let headers = crate::proxy::handlers::common::build_token_error_headers_for_protocol(
+                "claude",
+                Some(request_with_mapped.model.as_str()),
+                Some(email.as_str()),
+                &error_text,
+            );
             let dual_err = crate::proxy::handlers::common::build_dual_track_error(
                 "claude",
-                status_code,
+                response_status.as_u16(),
                 &request_with_mapped.model,
                 &error_text,
             );
-            return (
-                status,
-                [
-                    ("X-Account-Email", email.as_str()),
-                    ("X-Mapped-Model", request_with_mapped.model.as_str()),
-                ],
-                Json(dual_err),
-            )
-                .into_response();
+            return (response_status, headers, Json(dual_err)).into_response();
         }
     }
 
-    if let Some(email) = last_email {
-        // [FIX] Include X-Mapped-Model in exhaustion error
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "X-Account-Email",
-            header::HeaderValue::from_str(&email).unwrap(),
-        );
-        if let Some(ref model) = last_mapped_model {
-            if let Ok(v) = header::HeaderValue::from_str(model) {
-                headers.insert("X-Mapped-Model", v);
-            }
-        }
+    let response_status = normalize_claude_error_status(last_status.as_u16());
+    let headers = crate::proxy::handlers::common::build_token_error_headers_for_protocol(
+        "claude",
+        last_mapped_model.as_deref(),
+        last_email.as_deref(),
+        &last_error,
+    );
+    let model_str = last_mapped_model.as_deref().unwrap_or("unknown");
+    let dual_err = crate::proxy::handlers::common::build_dual_track_error(
+        "claude",
+        response_status.as_u16(),
+        model_str,
+        &last_error,
+    );
 
-        let _error_type = match last_status.as_u16() {
-            400 => "invalid_request_error",
-            401 => "authentication_error",
-            403 => "permission_error",
-            429 => "rate_limit_error",
-            529 => "overloaded_error",
-            _ => "api_error",
-        };
-
-        // [FIX] 403 时返回 503，避免 Claude Code 客户端退出到登录页
-        let response_status = if last_status.as_u16() == 403 {
-            StatusCode::SERVICE_UNAVAILABLE
-        } else {
-            last_status
-        };
-
-        if let Some(sec) = crate::proxy::handlers::common::extract_retry_after_seconds(&last_error)
-        {
-            if let Ok(val) = header::HeaderValue::from_str(&sec.to_string()) {
-                headers.insert(axum::http::header::RETRY_AFTER, val);
-            }
-        }
-
-        let model_str = last_mapped_model.as_deref().unwrap_or("unknown");
-        let dual_err = crate::proxy::handlers::common::build_dual_track_error(
-            "claude",
-            response_status.as_u16(),
-            model_str,
-            &last_error,
-        );
-
-        (response_status, headers, Json(dual_err)).into_response()
-    } else {
-        // Fallback if no email (e.g. mapping error before token)
-        let mut headers = HeaderMap::new();
-        if let Some(ref model) = last_mapped_model {
-            if let Ok(v) = header::HeaderValue::from_str(model) {
-                headers.insert("X-Mapped-Model", v);
-            }
-        }
-        if let Some(sec) = crate::proxy::handlers::common::extract_retry_after_seconds(&last_error)
-        {
-            if let Ok(val) = header::HeaderValue::from_str(&sec.to_string()) {
-                headers.insert(axum::http::header::RETRY_AFTER, val);
-            }
-        }
-
-        let _error_type = match last_status.as_u16() {
-            400 => "invalid_request_error",
-            401 => "authentication_error",
-            403 => "permission_error",
-            429 => "rate_limit_error",
-            529 => "overloaded_error",
-            _ => "api_error",
-        };
-
-        // [FIX] 403 时返回 503，避免 Claude Code 客户端退出到登录页
-        let response_status = if last_status.as_u16() == 403 {
-            StatusCode::SERVICE_UNAVAILABLE
-        } else {
-            last_status
-        };
-
-        let model_str = last_mapped_model.as_deref().unwrap_or("unknown");
-        let dual_err = crate::proxy::handlers::common::build_dual_track_error(
-            "claude",
-            response_status.as_u16(),
-            model_str,
-            &last_error,
-        );
-
-        (response_status, headers, Json(dual_err)).into_response()
-    }
+    (response_status, headers, Json(dual_err)).into_response()
 }
 
 /// 列出可用模型
@@ -2850,6 +2853,150 @@ mod opus_variant_tests {
         };
 
         assert_eq!(request_thinking.budget_tokens, Some(1_024));
+    }
+}
+
+#[cfg(test)]
+mod claude_error_normalization_tests {
+    use super::*;
+    use axum::http::StatusCode;
+
+    #[test]
+    fn test_normalize_claude_error_status_mappings() {
+        // 529 必须映射为 429，防止触发 Claude Code PB(an) 过载降级与 10~30 分钟冷却
+        assert_eq!(
+            normalize_claude_error_status(529),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        // 403 必须映射为 503，防止 Claude Code 客户端误判为 Session 失效并弹出登录页
+        assert_eq!(
+            normalize_claude_error_status(403),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        // 其余常见状态码保持原样透传
+        assert_eq!(
+            normalize_claude_error_status(429),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(normalize_claude_error_status(400), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            normalize_claude_error_status(500),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(
+            normalize_claude_error_status(503),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    #[test]
+    fn test_claude_dual_track_error_never_emits_overloaded_error() {
+        let err_json = crate::proxy::handlers::common::build_dual_track_error(
+            "claude",
+            429,
+            "claude-3-7-sonnet",
+            "Rate limit exceeded. Resource has been exhausted.",
+        );
+
+        let err_str = serde_json::to_string(&err_json).unwrap();
+        // 确保绝对不包含 "overloaded_error"，防止被 Claude Code PB(an) 正则或 message 捕获
+        assert!(!err_str.contains("overloaded_error"));
+        assert_eq!(err_json["type"], "error");
+        assert_eq!(err_json["error"]["type"], "rate_limit_error");
+    }
+
+    #[test]
+    fn test_claude_error_headers_clamp_extreme_quota_delay() {
+        // 模拟上游返回 5360s 超大重试延迟（避免客户端计算出 1h 29m 20s）
+        let headers = crate::proxy::handlers::common::build_token_error_headers_for_protocol(
+            "claude",
+            Some("claude-3-7-sonnet"),
+            Some("test@example.com"),
+            "Resource has been exhausted (e.g. check quota). Wait 5360s.",
+        );
+
+        assert_eq!(
+            headers.get("x-mapped-model").unwrap().to_str().unwrap(),
+            "claude-3-7-sonnet"
+        );
+        assert_eq!(
+            headers.get("x-account-email").unwrap().to_str().unwrap(),
+            "test@example.com"
+        );
+        // Retry-After 必须被收敛至 safe 范围 (<= 12s)
+        let retry_after = headers
+            .get(axum::http::header::RETRY_AFTER)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let retry_sec: u64 = retry_after.parse().unwrap();
+        assert!(
+            retry_sec <= 12,
+            "retry_sec must be <= 12s, got {}",
+            retry_sec
+        );
+        assert!(retry_sec >= 1, "retry_sec must be >= 1s, got {}", retry_sec);
+        assert_eq!(retry_sec, 12);
+    }
+
+    #[test]
+    fn test_global_budget_bounds_peek_timeout() {
+        // 验证全局预算对单次 peek 超时进行刚性约束，杜绝突破客户端 300s 看门狗
+        let base_peek_compaction =
+            crate::proxy::handlers::common::calculate_adaptive_peek_timeout(true, false, None);
+        assert_eq!(base_peek_compaction, 180);
+
+        // 当全局预算仅剩 40s 时，单次 peek 必须被安全收敛至 38s
+        let remaining_secs = 40u64;
+        let effective_peek = base_peek_compaction.min(remaining_secs.saturating_sub(2).max(5));
+        assert_eq!(effective_peek, 38);
+
+        // 当全局预算仅剩 6s 时，单次 peek 至少保留 5s 兜底
+        let remaining_secs_low = 6u64;
+        let effective_peek_low =
+            base_peek_compaction.min(remaining_secs_low.saturating_sub(2).max(5));
+        assert_eq!(effective_peek_low, 5);
+    }
+
+    #[test]
+    fn test_normalize_claude_error_status_gateway_timeout() {
+        assert_eq!(
+            normalize_claude_error_status(504),
+            StatusCode::GATEWAY_TIMEOUT
+        );
+        let err_json = crate::proxy::handlers::common::build_dual_track_error(
+            "claude",
+            504,
+            "claude-3-7-sonnet",
+            "Gateway global request budget exceeded (240s)",
+        );
+        assert_eq!(err_json["type"], "error");
+        let err_str = serde_json::to_string(&err_json).unwrap();
+        assert!(!err_str.contains("overloaded_error"));
+    }
+
+    #[test]
+    fn test_non_streaming_peek_heartbeat_detection() {
+        // 验证非流式 peek 识别并过滤心跳保活帧（包括注释心跳与官方 ping 事件）
+        let comment_ping = b": ping\n\n";
+        let text_comment = String::from_utf8_lossy(comment_ping);
+        assert!(text_comment.trim().starts_with(":"));
+
+        let event_ping = b"event: ping\ndata: {\"type\": \"ping\"}\n\n";
+        let text_event = String::from_utf8_lossy(event_ping);
+        assert!(
+            text_event.trim().starts_with(":")
+                || text_event.contains("\"type\":\"ping\"")
+                || text_event.contains("\"type\": \"ping\"")
+        );
+
+        let real_data = b"event: message_start\ndata: {\"type\":\"message_start\"}\n\n";
+        let text_real = String::from_utf8_lossy(real_data);
+        assert!(
+            !text_real.trim().starts_with(":")
+                && !text_real.contains("\"type\":\"ping\"")
+                && !text_real.contains("\"type\": \"ping\"")
+        );
     }
 }
 
