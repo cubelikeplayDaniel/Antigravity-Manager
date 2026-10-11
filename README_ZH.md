@@ -307,6 +307,12 @@ jeikcode --model claude-sonnet-4-6
 > 更多高级配置与排查指南参见：[JeikCode 接入 Antigravity-Manager 指南](./docs/jeikcode_integration.md)
 
 ### 如何接入 Claude Code CLI?
+> **客户端推荐版本说明**：
+> - **稳定生产推荐**：`Claude Code v2.1.28x`（流完成校验相对宽松，网络抖动下鲁棒性最高）；
+> - **最新版本支持**：`Claude Code v2.1.293 ~ v2.1.295`（须配合部署包含断流防挂起与保活优化的网关版本，详见 [排查诊断文档](./docs/CLAUDE_CODE_STREAM_DIAGNOSIS.md)）。
+> 
+> 安装指定稳定版本示例：`npm install -g @anthropic-ai/claude-code@2.1.284`
+
 1.  启动 Antigravity，并在“API 反代”页面开启服务。
 2.  在终端执行：
 ```bash
