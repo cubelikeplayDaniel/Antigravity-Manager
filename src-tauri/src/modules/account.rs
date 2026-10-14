@@ -492,6 +492,75 @@ mod tests {
     }
 
     #[test]
+    fn test_toggle_proxy_status_synchronizes_index_and_account_file() {
+        let _guard = SHARED_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = TestDataDir::new();
+        std::env::set_var("ABV_DATA_DIR", dir.path());
+
+        create_account_file(dir.path(), "acc-toggle", "toggle@example.com");
+        let now = chrono::Utc::now().timestamp();
+        let index = AccountIndex {
+            version: "2.0".to_string(),
+            accounts: vec![AccountSummary {
+                id: "acc-toggle".to_string(),
+                email: "toggle@example.com".to_string(),
+                name: Some("Toggle User".to_string()),
+                disabled: false,
+                proxy_disabled: false,
+                protected_models: HashSet::new(),
+                created_at: now,
+                last_used: now,
+            }],
+            current_account_id: Some("acc-toggle".to_string()),
+            current_target_ide: None,
+        };
+        save_account_index_in_dir(dir.path(), &index).unwrap();
+
+        // 1. Disable proxy
+        toggle_proxy_status("acc-toggle", false, Some("testing disable")).unwrap();
+
+        let loaded_account = load_account("acc-toggle").unwrap();
+        assert!(loaded_account.proxy_disabled);
+        assert_eq!(
+            loaded_account.proxy_disabled_reason.as_deref(),
+            Some("testing disable")
+        );
+
+        let loaded_index = load_account_index_in_dir(dir.path()).unwrap();
+        assert!(
+            loaded_index
+                .accounts
+                .iter()
+                .find(|a| a.id == "acc-toggle")
+                .unwrap()
+                .proxy_disabled,
+            "Index must be synchronized when proxy is disabled"
+        );
+
+        // 2. Re-enable proxy
+        toggle_proxy_status("acc-toggle", true, None).unwrap();
+
+        let reloaded_account = load_account("acc-toggle").unwrap();
+        assert!(!reloaded_account.proxy_disabled);
+        assert!(reloaded_account.proxy_disabled_reason.is_none());
+
+        let reloaded_index = load_account_index_in_dir(dir.path()).unwrap();
+        assert!(
+            !reloaded_index
+                .accounts
+                .iter()
+                .find(|a| a.id == "acc-toggle")
+                .unwrap()
+                .proxy_disabled,
+            "Index must be synchronized when proxy is re-enabled"
+        );
+
+        std::env::remove_var("ABV_DATA_DIR");
+    }
+
+    #[test]
     fn test_backup_created_on_parse_failure() {
         let _guard = SHARED_TEST_ENV_LOCK
             .lock()

@@ -1838,6 +1838,32 @@ impl TokenManager {
     /// P2C 算法的候选池大小 - 从前 N 个最优候选中随机选择
     const P2C_POOL_SIZE: usize = 5;
 
+    /// 临期配额提权最低门槛（百分比）：<= 10% 的濒危额度不享受 EDF 提权，保护健康账号
+    pub const IMMINENT_QUOTA_FLOOR: i32 = 10;
+    /// 周配额临期检测窗口（秒）：24小时
+    pub const WEEKLY_IMMINENT_HORIZON_SECS: i64 = 86400;
+    /// 短期（5小时滚动）配额临期检测窗口（秒）：2小时
+    pub const SHORT_IMMINENT_HORIZON_SECS: i64 = 7200;
+
+    /// 计算账号针对目标模型的临期截止时间戳。
+    /// 若配额已处于濒危水平 (<= 10%) 或未进入临期窗口，则返回 None。
+    pub fn get_imminent_deadline(t: &ProxyToken, q: i32, now_ts: i64) -> Option<i64> {
+        if q <= Self::IMMINENT_QUOTA_FLOOR {
+            return None;
+        }
+        if let Some(w) = t.weekly_reset_time {
+            if w > now_ts && (w - now_ts) <= Self::WEEKLY_IMMINENT_HORIZON_SECS {
+                return Some(w);
+            }
+        }
+        if let Some(r) = t.reset_time {
+            if r > now_ts && (r - now_ts) <= Self::SHORT_IMMINENT_HORIZON_SECS {
+                return Some(r);
+            }
+        }
+        None
+    }
+
     /// Power of 2 Choices (P2C) 选择算法
     /// 从前 5 个候选中随机选 2 个，选择配额更高的 -> 避免热点
     /// 返回选中的索引
@@ -1991,27 +2017,10 @@ impl TokenManager {
             .copied()
             .unwrap_or_else(|| c2.remaining_quota.unwrap_or(0));
 
-        // P2C 临期感知选择：若一候选账号存在临期配额 (<= 24h 重置且 q > 0)，优先抽中该临期账号防止配额作废
+        // P2C 临期感知选择：若候选账号存在临期充足配额 (<= 24h 重置且 q > 10%)，优先抽中该临期账号防止配额作废
         let now_ts = chrono::Utc::now().timestamp();
-        let get_imminent = |t: &ProxyToken, q: i32| -> Option<i64> {
-            if q <= 0 {
-                return None;
-            }
-            if let Some(w) = t.weekly_reset_time {
-                if w > now_ts && (w - now_ts) <= 86400 {
-                    return Some(w);
-                }
-            }
-            if let Some(r) = t.reset_time {
-                if r > now_ts && (r - now_ts) <= 7200 {
-                    return Some(r);
-                }
-            }
-            None
-        };
-
-        let imm1 = get_imminent(c1, q1);
-        let imm2 = get_imminent(c2, q2);
+        let imm1 = Self::get_imminent_deadline(c1, q1, now_ts);
+        let imm2 = Self::get_imminent_deadline(c2, q2, now_ts);
 
         // 终审比较：在途并发更少者绝对优先；在途相同时结合临期与剩余配额比较
         let inflight1 = self.get_in_flight(&c1.account_id);
@@ -2433,33 +2442,14 @@ impl TokenManager {
             // [NEW] Priority 0.5: 临期配额优先消耗 (Earliest Deadline First / Use-It-Or-Lose-It)
             // 针对 Gemini / Claude 账号池的核心经济学优化：
             // Google 对 Pro/Ultra 账号设置了周额度上限（7d 窗口）和 5h 滚动窗口。
-            // 当一个账号的周额度即将重置（例如 < 24 小时）且该账号仍有可用额度 (> 0%) 时，
+            // 当一个账号的周额度即将重置（例如 < 24 小时）且该账号仍有充足可用额度 (> 10%) 时，
             // 若不尽快消耗该账号，未用配额将在周期重置时被彻底清零作废！
             // 相反，重置时间还遥遥无期（如 5~7 天后）的账号即使配额多，也应当退居其后，让临期配额先行释放。
+            // 注意：若账号剩余额度已濒危（<= 10%），绝不可被提权抢占健康账号，
+            // 否则会快速耗尽单次请求的 429 容错重试配额，导致健康账号未被尝试即整体报错。
             let now_ts = chrono::Utc::now().timestamp();
-            let get_imminent_deadline = |t: &ProxyToken, q: i32| -> Option<i64> {
-                if q <= 0 {
-                    return None; // 0% 额度的账号无剩余额度可供消耗，绝不提权
-                }
-                // 1. 周配额重置检测：24小时内重置视为临期
-                const WEEKLY_IMMINENT_HORIZON_SECS: i64 = 86400; // 24小时
-                if let Some(w_ts) = t.weekly_reset_time {
-                    if w_ts > now_ts && (w_ts - now_ts) <= WEEKLY_IMMINENT_HORIZON_SECS {
-                        return Some(w_ts);
-                    }
-                }
-                // 2. 滚动 5h 配额重置检测：2小时内重置视为临期
-                const SHORT_IMMINENT_HORIZON_SECS: i64 = 7200; // 2小时
-                if let Some(r_ts) = t.reset_time {
-                    if r_ts > now_ts && (r_ts - now_ts) <= SHORT_IMMINENT_HORIZON_SECS {
-                        return Some(r_ts);
-                    }
-                }
-                None
-            };
-
-            let imminent_a = get_imminent_deadline(a, quota_a);
-            let imminent_b = get_imminent_deadline(b, quota_b);
+            let imminent_a = Self::get_imminent_deadline(a, quota_a, now_ts);
+            let imminent_b = Self::get_imminent_deadline(b, quota_b, now_ts);
 
             match (imminent_a, imminent_b) {
                 (Some(ts_a), Some(ts_b)) => {
@@ -6351,6 +6341,31 @@ mod tests {
     }
 
     #[test]
+    fn test_p2c_depleted_imminent_account_does_not_beat_healthy_account() {
+        let manager = TokenManager::new(PathBuf::from("/tmp/test"));
+        let now_ts = chrono::Utc::now().timestamp();
+
+        let mut depleted = create_test_token("depleted@test.com", Some("PRO"), 1.0, None, Some(2));
+        depleted.weekly_reset_time = Some(now_ts + 3600); // 1 小时后重置
+
+        let mut healthy = create_test_token("healthy@test.com", Some("PRO"), 1.0, None, Some(80));
+        healthy.weekly_reset_time = Some(now_ts + 432_000); // 5 天后重置
+
+        let candidates = vec![depleted, healthy];
+        let attempted: HashSet<String> = HashSet::new();
+
+        for _ in 0..10 {
+            let result = manager.select_with_p2c(&candidates, &attempted, "claude-sonnet", false);
+            assert!(result.is_some());
+            assert_eq!(
+                result.unwrap().email,
+                "healthy@test.com",
+                "濒危配额(<=10%)即使临期重置也绝不得在 P2C 中胜出健康账号"
+            );
+        }
+    }
+
+    #[test]
     fn account_priority_p2c_stays_in_highest_available_group() {
         let manager = TokenManager::new(PathBuf::new());
         let mut high = create_test_token("high", Some("FREE"), 0.5, None, Some(1));
@@ -7839,5 +7854,69 @@ mod tests {
 
         drop(guard0);
         drop(guard1);
+    }
+
+    #[tokio::test]
+    async fn test_edf_sorting_depleted_imminent_quota_does_not_usurp_healthy_account() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let manager = TokenManager::new(temp_dir.path().to_path_buf());
+        let now_ts = chrono::Utc::now().timestamp();
+
+        let target_model = "gemini-3.8-flash-high";
+        let norm_target =
+            crate::proxy::common::model_mapping::normalize_to_standard_id(target_model)
+                .unwrap_or_else(|| target_model.to_string());
+
+        // 账号 A: 残留濒危配额 (2%)，即便 1 小时后重置，也绝不能抢占高配额健康账号（避免耗尽重试预算导致假性 429）
+        let mut quotas_a = HashMap::new();
+        quotas_a.insert(norm_target.clone(), 2);
+        let mut token_a = create_test_token(
+            "depleted_expiring@test.com",
+            Some("PRO"),
+            1.0,
+            None,
+            Some(2),
+        );
+        token_a.account_id = "acc_depleted".to_string();
+        token_a.model_quotas = quotas_a;
+        token_a.weekly_reset_time = Some(now_ts + 3600); // 1 小时后重置
+
+        // 账号 B: 95% 健康配额，周配额在 5 天后重置
+        let mut quotas_b = HashMap::new();
+        quotas_b.insert(norm_target, 95);
+        let mut token_b =
+            create_test_token("healthy_distant@test.com", Some("PRO"), 1.0, None, Some(95));
+        token_b.account_id = "acc_healthy".to_string();
+        token_b.model_quotas = quotas_b;
+        token_b.weekly_reset_time = Some(now_ts + 432_000); // 5 天后
+
+        std::fs::write(
+            temp_dir.path().join("acc_depleted.json"),
+            r#"{"disabled":false}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            temp_dir.path().join("acc_healthy.json"),
+            r#"{"disabled":false}"#,
+        )
+        .unwrap();
+
+        token_a.account_path = temp_dir.path().join("acc_depleted.json");
+        token_b.account_path = temp_dir.path().join("acc_healthy.json");
+
+        manager.tokens.insert(token_a.account_id.clone(), token_a);
+        manager.tokens.insert(token_b.account_id.clone(), token_b);
+
+        let excluded = HashSet::new();
+        let (_token, _project_id, email, selected_id, _wait) = manager
+            .get_token_filtered("chat", false, None, target_model, &excluded)
+            .await
+            .expect("Token acquisition should succeed");
+
+        assert_eq!(
+            selected_id, "acc_healthy",
+            "濒危低配额(<=10%)账号即便临期也绝不得抢占健康高配额账号"
+        );
+        assert_eq!(email, "healthy_distant@test.com");
     }
 }
