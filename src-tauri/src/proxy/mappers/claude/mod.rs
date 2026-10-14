@@ -584,7 +584,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_claude_sse_stream_mid_stream_interruption_propagates_error_and_does_not_fake_end_turn(
+    async fn test_create_claude_sse_stream_mid_stream_interruption_gracefully_finalizes_with_terminal_triad(
     ) {
         use futures::StreamExt;
 
@@ -614,7 +614,7 @@ mod tests {
                 Ok(bytes) => all_chunks.push(String::from_utf8(bytes.to_vec()).unwrap()),
                 Err(e) => {
                     error_propagated = true;
-                    assert!(e.contains("connection reset by peer"));
+                    eprintln!("unexpected mid-stream error: {}", e);
                 }
             }
         }
@@ -632,17 +632,22 @@ mod tests {
             "Must NOT inject synthetic truncation notice into user content"
         );
 
-        // 3. 严禁伪造正常收尾 message_delta(end_turn) 或 message_stop 欺骗客户端，确保客户端识别到断流并自动触发重试
+        // 3. [黄金三元组契约] 必须优雅闭合 content_block 并下发 message_delta(end_turn) + message_stop，
+        // 满足 qu !== null && zb && El === null，激活客户端 keepPartial 豁免逻辑，杜绝丢弃已生成 Token 与重思死循环
         assert!(
-            !output.contains(r#""stop_reason":"end_turn""#),
-            "Must NOT fake stop_reason end_turn on mid-stream drop"
+            output.contains("content_block_stop"),
+            "Must close open content block with content_block_stop"
         );
         assert!(
-            !output.contains("event: message_stop"),
-            "Must NOT emit message_stop on mid-stream drop"
+            output.contains(r#""stop_reason":"end_turn""#),
+            "Must emit stop_reason end_turn to satisfy terminal triad"
+        );
+        assert!(
+            output.contains("event: message_stop"),
+            "Must emit message_stop to finish SSE stream"
         );
 
-        // 4. 严禁在已输出内容后发送 event: error 或 overloaded_error，必须向外层传播真实 Err
+        // 4. 严禁在已输出内容后发送 event: error 或 overloaded_error
         assert!(
             !output.contains("event: error"),
             "Must NOT emit event: error after content was already emitted"
@@ -652,8 +657,8 @@ mod tests {
             "Must NOT emit overloaded_error which triggers infinite client retries"
         );
         assert!(
-            error_propagated,
-            "Mid-stream network error must propagate as Err to trigger client native retry"
+            !error_propagated,
+            "Mid-stream network error must NOT propagate as raw Err after content emitted"
         );
     }
 

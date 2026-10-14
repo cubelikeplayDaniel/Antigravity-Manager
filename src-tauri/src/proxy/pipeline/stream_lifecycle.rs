@@ -96,6 +96,7 @@ impl StreamLifecycleConfig {
         }
     }
 
+    #[cfg(test)]
     pub fn with_timeouts(
         mut self,
         initial_ttft_secs: u64,
@@ -105,6 +106,12 @@ impl StreamLifecycleConfig {
         self.initial_ttft_secs = initial_ttft_secs;
         self.transition_secs = transition_secs;
         self.streaming_sliding_secs = streaming_sliding_secs;
+        self
+    }
+
+    #[cfg(test)]
+    pub fn with_heartbeat_secs(mut self, heartbeat_secs: u64) -> Self {
+        self.heartbeat_secs = heartbeat_secs;
         self
     }
 }
@@ -236,23 +243,39 @@ where
                                         &e,
                                         config.trace_info.clone(),
                                     );
+
+                                    // [黄金三元组收尾契约] 若已有正文/工具调用输出（has_content == true）：
+                                    // 发生上游网络断开（如 TCP RST、连接重置或中断）时，严禁透传底层 Err 截断连接！
+                                    // 透传底层 Err 会导致客户端未闭合块抛出 StreamTruncatedError，
+                                    // 丢弃所有已生成的成千上万 token 并反复无限重思考重置当前 turn。
+                                    // 此时应优雅跳出循环，交由尾部逻辑冲刷缓冲区并调用 emit_finalize()，
+                                    // 产出合法的 content_block_stop + message_delta(stop_reason: end_turn) + message_stop，
+                                    // 促使 Claude Code 等客户端命中 keepPartial 豁免模型，保全已生成内容。
+                                    if handler.has_content() {
+                                        tracing::warn!(
+                                            "[{}] {} upstream stream chunk error after content emitted, gracefully finalizing: {}",
+                                            config.adapter_name,
+                                            config.function_name,
+                                            report.client_message()
+                                        );
+                                        break;
+                                    }
+
                                     tracing::warn!(
-                                        "[{}] {} upstream stream chunk error: {}",
+                                        "[{}] {} upstream stream chunk error before content: {}",
                                         config.adapter_name,
                                         config.function_name,
                                         report.client_message()
                                     );
 
                                     // 若首包前发生异常（未产生任何正文与思考），下发协议专属的初始错误事件
-                                    if !handler.has_content() && !handler.has_thinking() {
+                                    if !handler.has_thinking() {
                                         let err_chunks = handler.emit_initial_error(&report);
                                         for c in err_chunks {
                                             yield Ok(c);
                                         }
                                     }
                                     error_emitted = true;
-                                    // 无论处于何种阶段，中途发生上游网络断开时如实作为 Err 流出，
-                                    // 严禁吞没错误伪造 end_turn 或 message_stop，交由客户端原生重试机制接管。
                                     yield Err(report.client_message());
                                     break;
                                 }
@@ -324,15 +347,31 @@ where
                                 config.trace_info, phase, phase_timeout_secs
                             ),
                         );
+
+                        // [黄金三元组收尾契约] 若已有正文/工具调用输出（has_content == true）：
+                        // 发生空闲静默超时时，严禁透传底层 Err 截断连接导致客户端丢弃全部内容重置！
+                        // 优雅跳出循环执行尾部收尾与 emit_finalize()，保全已有生成内容并满足客户端三元组闭合契约。
+                        if handler.has_content() {
+                            tracing::warn!(
+                                "[{}] {} stream idle timeout after {}s in phase {:?} after content emitted, gracefully finalizing",
+                                config.adapter_name,
+                                config.function_name,
+                                phase_timeout_secs,
+                                phase
+                            );
+                            break;
+                        }
+
                         tracing::warn!(
-                            "[{}] {} stream idle timeout after {}s in phase {:?}",
+                            "[{}] {} stream idle timeout after {}s in phase {:?} before content",
                             config.adapter_name,
                             config.function_name,
                             phase_timeout_secs,
                             phase
                         );
 
-                        if !handler.has_content() && !handler.has_thinking() {
+                        // 若首包前发生异常（未产生任何正文与思考），下发协议专属的初始错误事件
+                        if !handler.has_thinking() {
                             let err_chunks = handler.emit_initial_error(&report);
                             for c in err_chunks {
                                 yield Ok(c);
@@ -533,7 +572,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_lifecycle_interruption_after_content_propagates_error_without_finalize() {
+    async fn test_lifecycle_interruption_after_content_gracefully_finalizes() {
         let mock_stream = async_stream::stream! {
             yield Ok::<_, String>(Bytes::from("data: partial content\n"));
             yield Err::<Bytes, _>("connection reset mid stream".to_string());
@@ -550,7 +589,7 @@ mod tests {
                 Ok(b) => output.push(String::from_utf8_lossy(&b).to_string()),
                 Err(e) => {
                     error_received = true;
-                    assert!(e.contains("connection reset mid stream"));
+                    eprintln!("unexpected error: {}", e);
                 }
             }
         }
@@ -558,14 +597,57 @@ mod tests {
         let full_output = output.join("");
         assert!(full_output.contains("processed:data: partial content"));
         assert!(
-            !full_output.contains("[finalized]"),
-            "Must NOT finalize when error occurs"
+            full_output.contains("[finalized]"),
+            "Must finalize when error occurs after content emitted to fulfill terminal triad contract"
         );
         assert!(
             !full_output.contains("[initial_error]"),
             "Must NOT emit initial error when content exists"
         );
-        assert!(error_received, "Stream must propagate Err on interruption");
+        assert!(
+            !error_received,
+            "Stream must NOT propagate raw Err after content emitted, preventing client stream truncation and reset loops"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_lifecycle_idle_timeout_after_content_gracefully_finalizes() {
+        let mock_stream = async_stream::stream! {
+            yield Ok::<_, String>(Bytes::from("data: partial content\n"));
+            // 保持静默超过稳态滑动超时 (streaming_sliding_secs = 1s)
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            yield Ok::<_, String>(Bytes::from("data: unreachable\n"));
+        };
+
+        let handler = MockHandler::new(false, false);
+        let config =
+            StreamLifecycleConfig::new("test", "test_fn", "trace_idle_after_content".to_string())
+                .with_timeouts(5, 5, 1)
+                .with_heartbeat_secs(1);
+        let mut stream = run_stream_lifecycle(Box::pin(mock_stream), handler, config);
+
+        let mut output = Vec::new();
+        let mut error_received = false;
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(b) => output.push(String::from_utf8_lossy(&b).to_string()),
+                Err(_) => {
+                    error_received = true;
+                }
+            }
+        }
+
+        let full_output = output.join("");
+        assert!(full_output.contains("processed:data: partial content"));
+        assert!(
+            full_output.contains("[finalized]"),
+            "Must finalize when idle timeout occurs after content emitted"
+        );
+        assert!(
+            !error_received,
+            "Must NOT propagate raw Err on idle timeout after content"
+        );
+        assert!(!full_output.contains("unreachable"));
     }
 
     #[tokio::test]
