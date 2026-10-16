@@ -309,15 +309,15 @@ pub fn determine_retry_strategy_adaptive(
                         && !lower.contains("resource has been exhausted")));
 
             // 请求级 429 防早退与极速失败保护 (无明确重置时间且非账号硬配额耗尽)：
-            // 在多账号池中，第一轮 (attempt < pool_size) 允许全池每一个可用健康账号均获得 1 次 50ms 闪电执行机会，
-            // 解决大 Prompt 突发并发导致单号瞬态 429 时全池健康账号被过早熔断误杀的问题。
-            // 当第一轮全池遍历后所有账号均遭遇 429（attempt >= pool_size），立即快速失败退出 (NoRetry)，
-            // 坚决杜绝进入漫长的高延迟阶梯退避导致客户端感知近 1 分钟的假死等待。
+            // 在多账号池中，第一轮 (attempt < pool_size) 允许全池每一个可用健康账号均获得 1 次 150ms 执行机会，
+            // 并支持第二轮 (pool_size <= attempt < pool_size * 2) 线性退避 (1.5s~3.5s) 恢复重试，
+            // 解决大 Prompt 突发并发导致瞬态 429 时全池健康账号被 150ms 闪电过早误杀退出（Fixes #3506）。
+            // 仅当第二轮全池遍历耗尽（attempt >= pool_size * 2）仍 429 时，立即快速失败退出 (NoRetry)。
             let is_request_level_429 = parsed_delay.is_none() && !is_hard_quota_exhausted;
-            let request_level_429_max_attempts = pool_size.max(1);
+            let request_level_429_max_attempts = (pool_size * 2).max(2);
             if is_request_level_429 && attempt >= request_level_429_max_attempts {
                 tracing::warn!(
-                    "[Retry] Request-level 429 persisted across full pool after {} attempts without explicit delay; fail-fast aborting to prevent long client stalls.",
+                    "[Retry] Request-level 429 persisted across 2 rounds ({} attempts); aborting to prevent excessive client stalls.",
                     attempt
                 );
                 return RetryStrategy::NoRetry;
@@ -343,12 +343,12 @@ pub fn determine_retry_strategy_adaptive(
 
             let is_first_round = attempt < pool_size;
             if is_first_round {
-                // Round 1 (第一轮)：全池闪电快切，毫秒级逃逸至其他健康账号
+                // Round 1 (第一轮)：全池匀速轮换 (150ms)，留出微冷却时间，毫秒级逃逸至其他健康账号
                 tracing::info!(
-                    "[Retry] Multi-account Round 1 (attempt {}/{}): fast rotating to next account in pool (50ms)",
+                    "[Retry] Multi-account Round 1 (attempt {}/{}): rotating to next account in pool (150ms)",
                     attempt + 1, pool_size
                 );
-                return RetryStrategy::FixedDelay(Duration::from_millis(50));
+                return RetryStrategy::FixedDelay(Duration::from_millis(150));
             }
 
             // Round 2 (第二轮)：全池在第一轮已全部遭遇 429，进入智能退避与小间隙等待阶段
@@ -381,8 +381,9 @@ pub fn determine_retry_strategy_adaptive(
                 return RetryStrategy::FixedDelay(Duration::from_millis(capped_ms));
             }
 
-            // 第二轮未解析出具体 delay：线性温和退避 2s~4s，让瞬时并发高峰平息
-            let backoff_ms = (2000 * ((attempt.saturating_sub(pool_size)) + 1) as u64).min(5000);
+            // 第二轮未解析出具体 delay：线性温和退避 1.5s~3.5s，让瞬时并发与 TPM 高峰平息冷却
+            let step = (attempt.saturating_sub(pool_size)) as u64;
+            let backoff_ms = (1500 + step * 1000).min(3500);
             RetryStrategy::FixedDelay(Duration::from_millis(backoff_ms))
         }
 

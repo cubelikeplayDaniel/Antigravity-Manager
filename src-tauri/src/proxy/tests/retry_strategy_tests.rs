@@ -183,11 +183,11 @@ fn test_adaptive_retry_multi_account_round_1_fast_rotates() {
     use crate::proxy::handlers::common::determine_retry_strategy_adaptive;
     let err_json = r#"{"error":{"message":"Resource has been exhausted","details":[{"quotaResetDelay":"4s"}]}}"#;
 
-    // 多账号 Round 1 (attempt = 0, pool_size = 3): 闪电轮换 (50ms)，优先切向号池中其他健康账号
+    // 多账号 Round 1 (attempt = 0, pool_size = 3): 匀速轮换 (150ms)，优先切向号池中其他健康账号并留出微冷却
     let strategy = determine_retry_strategy_adaptive(429, err_json, None, false, true, 0, 3);
     match strategy {
-        RetryStrategy::FixedDelay(d) => assert_eq!(d, Duration::from_millis(50)),
-        other => panic!("Expected FixedDelay(50ms), got {:?}", other),
+        RetryStrategy::FixedDelay(d) => assert_eq!(d, Duration::from_millis(150)),
+        other => panic!("Expected FixedDelay(150ms), got {:?}", other),
     }
 }
 
@@ -225,7 +225,7 @@ fn test_adaptive_retry_request_level_429_rotates_full_pool_then_aborts() {
         r#"{"error":{"code":429,"message":"Rate limit exceeded: too many concurrent requests."}}"#;
 
     let pool_size = 3;
-    // 允许第一轮全池每一个账号均获得 1 次执行尝试 (attempt 0, 1, 2: 50ms)
+    // 允许第一轮全池每一个账号均获得 1 次执行尝试 (attempt 0, 1, 2: 150ms)
     for attempt in 0..pool_size {
         let s = determine_retry_strategy_adaptive(
             429,
@@ -238,27 +238,47 @@ fn test_adaptive_retry_request_level_429_rotates_full_pool_then_aborts() {
         );
         assert_eq!(
             s,
-            RetryStrategy::FixedDelay(Duration::from_millis(50)),
+            RetryStrategy::FixedDelay(Duration::from_millis(150)),
             "Attempt {} should fast rotate in round 1",
             attempt
         );
     }
 
-    // attempt 3 (attempt == pool_size): 全池第一轮闪电切号均遇 429 后，由于无明确重置时间，触发快速失败 (fail-fast)，
-    // 立即返回 NoRetry，绝不进入漫长无谓的高延迟退避导致客户端感知近 1 分钟假死
+    // 第二轮 (attempt 3..6): 支持阶梯退避重试以等待账号恢复
+    for attempt in pool_size..(pool_size * 2) {
+        let s = determine_retry_strategy_adaptive(
+            429,
+            request_level_429,
+            None,
+            false,
+            true,
+            attempt,
+            pool_size,
+        );
+        let step = (attempt - pool_size) as u64;
+        let expected_ms = (1500 + step * 1000).min(3500);
+        assert_eq!(
+            s,
+            RetryStrategy::FixedDelay(Duration::from_millis(expected_ms)),
+            "Attempt {} should back off linearly in round 2",
+            attempt
+        );
+    }
+
+    // attempt 6 (attempt == pool_size * 2): 两轮全池均遇 429 后快速失败退出 (NoRetry)
     let s_abort = determine_retry_strategy_adaptive(
         429,
         request_level_429,
         None,
         false,
         true,
-        pool_size,
+        pool_size * 2,
         pool_size,
     );
     assert_eq!(
         s_abort,
         RetryStrategy::NoRetry,
-        "Request-level 429 should fail-fast abort immediately once full pool exhausted in round 1"
+        "Request-level 429 should fail-fast abort once 2 rounds exhausted"
     );
 }
 
@@ -282,18 +302,18 @@ fn test_adaptive_retry_explicit_hard_quota_rotates_full_pool_and_backs_off() {
         );
         assert_eq!(
             s,
-            RetryStrategy::FixedDelay(Duration::from_millis(50)),
+            RetryStrategy::FixedDelay(Duration::from_millis(150)),
             "Attempt {} should fast rotate in round 1",
             attempt
         );
     }
 
-    // Round 2 (attempt 3): 全池账号均耗尽，激活第二轮温和退避 (2000ms)，绝不误杀为 NoRetry
+    // Round 2 (attempt 3): 全池账号均耗尽，激活第二轮温和退避 (1500ms)，绝不误杀为 NoRetry
     let s_round2 =
         determine_retry_strategy_adaptive(429, hard_quota_429, None, false, true, 3, pool_size);
     assert_eq!(
         s_round2,
-        RetryStrategy::FixedDelay(Duration::from_millis(2000)),
+        RetryStrategy::FixedDelay(Duration::from_millis(1500)),
         "Round 2 attempt 3 should enter gentle linear backoff"
     );
 }
@@ -319,13 +339,13 @@ fn test_adaptive_retry_google_resource_exhausted_rotates_full_pool_then_aborts()
         );
         assert_eq!(
             s,
-            RetryStrategy::FixedDelay(Duration::from_millis(50)),
+            RetryStrategy::FixedDelay(Duration::from_millis(150)),
             "Attempt {} should fast rotate",
             attempt
         );
     }
 
-    // attempt 5 (attempt == pool_size): 全池第一轮 50ms 闪电切号均遇 429 后，由于无明确重置时间，触发快速失败 (fail-fast)，
+    // attempt 10 (attempt == pool_size * 2): 两轮全池 150ms 切号与退避均遇 429 后，触发快速失败 (fail-fast)，
     // 立即终止重试并返回 NoRetry，绝不进入漫长无谓的高延迟退避
     let s_abort = determine_retry_strategy_adaptive(
         429,
@@ -333,13 +353,13 @@ fn test_adaptive_retry_google_resource_exhausted_rotates_full_pool_then_aborts()
         None,
         false,
         true,
-        pool_size,
+        pool_size * 2,
         pool_size,
     );
     assert_eq!(
         s_abort,
         RetryStrategy::NoRetry,
-        "Google 429 without explicit delay should fail-fast abort once full pool exhausted in round 1"
+        "Google 429 without explicit delay should fail-fast abort once 2 rounds exhausted"
     );
 }
 
@@ -428,7 +448,7 @@ fn test_adaptive_retry_multi_account_round_1_micro_gap_takes_grace_retry_issue_3
     let s_fallback = determine_retry_strategy_adaptive(429, imagen_429, None, false, false, 0, 6);
     assert_eq!(
         s_fallback,
-        RetryStrategy::FixedDelay(Duration::from_millis(50)),
+        RetryStrategy::FixedDelay(Duration::from_millis(150)),
         "GraceRetry 已消耗时应顺畅回退至全池轮换"
     );
 }

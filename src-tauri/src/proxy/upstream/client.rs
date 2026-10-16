@@ -260,7 +260,7 @@ impl EndpointHealthTracker {
 
 impl Default for EndpointHealthTracker {
     fn default() -> Self {
-        Self::new(std::time::Duration::from_secs(300))
+        Self::new(std::time::Duration::from_secs(30))
     }
 }
 
@@ -353,11 +353,11 @@ impl UpstreamClient {
         let builder = Client::builder()
             .emulation(rquest_util::Emulation::Chrome123)
             // Connection settings (优化连接复用，减少建立开销)
-            // [OPTIMIZATION] 建连仅涉及 TCP/TLS 握手，从 20s 缩短至 5s，快速识别死端点，防止多级重试累积 40s 超时
-            .connect_timeout(Duration::from_secs(5))
-            .pool_max_idle_per_host(20) // 每主机最多 20 个空闲连接 (对齐官方指纹)
-            // [FIX] 空闲连接从 90s 缩短至 45s，避免 GFE 在 45~60s 静默掐断空闲 TCP 后客户端复用死连接引发 error reading a body
-            .pool_idle_timeout(Duration::from_secs(45))
+            // [OPTIMIZATION] 建连仅涉及 TCP/TLS 握手，设置为 10s，兼顾跨国网络抖动与快速识别死端点
+            .connect_timeout(Duration::from_secs(10))
+            .pool_max_idle_per_host(10) // 每主机最多 10 个空闲连接 (防止过多闲置连接被上游服务端静默掐断)
+            // [FIX] 空闲连接收紧至 15s，避免 GFE 在 20~30s 静默掐断空闲 TCP 后客户端复用死连接引发 error reading a body from connection
+            .pool_idle_timeout(Duration::from_secs(15))
             // [FIX #3593 / #3571] 彻底恢复 Chrome 123 原生协议行为：
             // 1. 实测证实 Google GFE 对客户端 HTTP/2 PING 帧静默丢弃、不回复 PING ACK，
             //    导致 hyper2 在 keep_alive_timeout 到期时本地自杀式掐死连接并抛出 error reading a body from connection；
@@ -678,20 +678,25 @@ impl UpstreamClient {
                 let switch_delay_s = last_attempt_failed_at.map(|t| t.elapsed().as_secs_f64());
                 let attempt_start = std::time::Instant::now();
 
-                // [WATCHDOG] 端点级防假死超时：当还有备用候选端点时，设置 12 秒流式预建联/首包超时，
-                // 防止上游故障端点（如 Prod 大流式请求）无响应静默挂起 56 秒阻塞全链路
+                // [WATCHDOG] 端点级自适应防假死超时：当还有备用候选端点时，根据请求体体积动态计算超时（保底 15s，大请求按 256KB/s 延展），
+                // 既防止上游故障端点无响应静默挂起 56 秒阻塞链路，又防止 11MB 等超大 prompt 因 12s 误判切号而导致雪崩中断（Fixes #3506）
+                let watchdog_secs =
+                    std::cmp::max(15, (body_bytes.len() as u64) / (256 * 1024) + 15);
                 let send_future = req_builder.send();
                 let response = if has_next {
-                    match tokio::time::timeout(std::time::Duration::from_secs(12), send_future)
-                        .await
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(watchdog_secs),
+                        send_future,
+                    )
+                    .await
                     {
                         Ok(res) => res,
                         Err(_) => {
                             self.endpoint_health.mark_failure(base_url);
                             last_attempt_failed_at = Some(std::time::Instant::now());
                             let err_msg = format!(
-                                "HTTP request timed out after 12s waiting for response headers at {} (method={})",
-                                base_url, method
+                                "HTTP request timed out after {}s waiting for response headers at {} (method={}, body_len={})",
+                                watchdog_secs, base_url, method, body_bytes.len()
                             );
                             tracing::warn!(%err_msg, "Upstream candidate endpoint timed out, fast falling back to next endpoint");
                             fallback_attempts.push(FallbackAttemptLog {

@@ -3186,16 +3186,16 @@ impl TokenManager {
                         })
                         .min();
 
-                    // Layer 1: 如果最短等待时间 <= 2秒,执行缓冲延迟
+                    // Layer 1: 如果最短等待时间 <= 5秒, 执行物理冷却延迟（留出冷却时间，杜绝频繁反复触发）
                     if let Some(wait_sec) = min_wait {
-                        if wait_sec <= 2 {
-                            let wait_ms = (wait_sec as f64 * 1000.0) as u64 + 50;
+                        if wait_sec <= 5 {
+                            let wait_ms = (wait_sec as f64 * 1000.0) as u64 + 100;
                             tracing::warn!(
-                                "All accounts rate-limited but shortest wait is {}s. Applying {}ms buffer for state sync...",
+                                "All accounts rate-limited but shortest wait is {}s. Applying {}ms physical cooldown delay...",
                                 wait_sec, wait_ms
                             );
 
-                            // 缓冲延迟
+                            // 物理冷却延迟
                             tokio::time::sleep(tokio::time::Duration::from_millis(wait_ms)).await;
 
                             // 重新尝试选择账号
@@ -3219,109 +3219,32 @@ impl TokenManager {
 
                             if let Some(t) = retry_token {
                                 tracing::info!(
-                                    "✅ Buffer delay successful! Found available account: {}",
+                                    "✅ Cooldown delay successful! Found available account: {}",
                                     t.email
                                 );
                                 t.clone()
                             } else {
-                                // Layer 2: 缓冲后仍无可用账号,执行乐观重置
                                 tracing::warn!(
-                                    "Buffer delay failed. Executing optimistic reset for all {} accounts...",
-                                    tokens_snapshot.len()
+                                    "Cooldown delay elapsed ({}s), but accounts still rate-limited. Demanding client cooldown backoff.",
+                                    wait_sec
                                 );
-
-                                // 清除所有限流记录
-                                self.rate_limit_tracker.clear_for_optimistic_reset();
-
-                                // 再次尝试选择账号 (优先选用未限流且对目标模型具备正配额的账号，严禁直接放行 0% 额度账号)
-                                let final_token = tokens_snapshot
-                                    .iter()
-                                    .find(|t| {
-                                        !attempted.contains(&t.account_id)
-                                            && !self.rate_limit_tracker.is_rate_limited(
-                                                &t.account_id,
-                                                Some(&normalized_target),
-                                            )
-                                            && !(quota_protection_enabled
-                                                && t.protected_models.contains(&normalized_target))
-                                            && t.model_quotas
-                                                .get(&normalized_target)
-                                                .copied()
-                                                .unwrap_or(0)
-                                                > 0
-                                    })
-                                    .or_else(|| {
-                                        tokens_snapshot.iter().find(|t| {
-                                            !attempted.contains(&t.account_id)
-                                                && !self.rate_limit_tracker.is_rate_limited(
-                                                    &t.account_id,
-                                                    Some(&normalized_target),
-                                                )
-                                                && !(quota_protection_enabled
-                                                    && t.protected_models
-                                                        .contains(&normalized_target))
-                                        })
-                                    });
-
-                                if let Some(t) = final_token {
-                                    tracing::info!(
-                                        "✅ Optimistic reset successful! Using account: {}",
-                                        t.email
-                                    );
-                                    t.clone()
-                                } else {
-                                    return Err(
-                                        "All accounts failed after optimistic reset.".to_string()
-                                    );
-                                }
+                                return Err(format!(
+                                    "All accounts rate-limited. Cooldown wait {}s.",
+                                    wait_sec
+                                ));
                             }
                         } else {
-                            // [FIX #3506] 当最小等待时间 > 2s 时，不进行阻塞式 sleep 缓冲（避免客户端请求超时）。
-                            // 但若全池仅被瞬态速率限制（RateLimitExceeded）锁定而无周配额耗尽硬伤时，
-                            // 立即执行 Layer 2 乐观重置清除瞬态流控标记，严禁直接返回 503 导致整池雪崩瘫痪。
+                            // 当等待时间 > 5s 时，不进行本地死等，坚决返回冷却等待错误，
+                            // 让上层协议（Claude Code / HTTP 429 Retry-After）主动进行客户端退避，
+                            // 严禁 0ms 乐观重置暴力清空限流标记导致多对话瞬态打穿 Google 上游（Fixes #3506）
                             tracing::warn!(
-                                "All accounts limited with wait {}s > 2s. Attempting optimistic reset for transient rate limits...",
+                                "All accounts rate-limited with wait {}s > 5s. Demanding client cooldown backoff.",
                                 wait_sec
                             );
-                            self.rate_limit_tracker.clear_for_optimistic_reset();
-                            let final_token = tokens_snapshot
-                                .iter()
-                                .find(|t| {
-                                    !attempted.contains(&t.account_id)
-                                        && !self.rate_limit_tracker.is_rate_limited(
-                                            &t.account_id,
-                                            Some(&normalized_target),
-                                        )
-                                        && !(quota_protection_enabled
-                                            && t.protected_models.contains(&normalized_target))
-                                        && t.model_quotas
-                                            .get(&normalized_target)
-                                            .copied()
-                                            .unwrap_or(0)
-                                            > 0
-                                })
-                                .or_else(|| {
-                                    tokens_snapshot.iter().find(|t| {
-                                        !attempted.contains(&t.account_id)
-                                            && !self.rate_limit_tracker.is_rate_limited(
-                                                &t.account_id,
-                                                Some(&normalized_target),
-                                            )
-                                            && !(quota_protection_enabled
-                                                && t.protected_models.contains(&normalized_target))
-                                    })
-                                });
-
-                            if let Some(t) = final_token {
-                                tracing::info!(
-                                    "✅ Optimistic reset successful for wait {}s! Rescued available account: {}",
-                                    wait_sec,
-                                    t.email
-                                );
-                                t.clone()
-                            } else {
-                                return Err(format!("All accounts limited. Wait {}s.", wait_sec));
-                            }
+                            return Err(format!(
+                                "All accounts rate-limited. Cooldown wait {}s.",
+                                wait_sec
+                            ));
                         }
                     } else {
                         return Err("All accounts failed or unhealthy.".to_string());

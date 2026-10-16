@@ -1,8 +1,24 @@
 use crate::models::QuotaData;
 use crate::modules::config;
+use once_cell::sync::Lazy;
 use rquest;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+
+/// 配额模块专属端点健康追踪器（独立观察期 60s），
+/// 与主代理网关的 GLOBAL_ENDPOINT_HEALTH 严格解耦，
+/// 坚决杜绝后台配额轮询与 project_id 探针超时污染推理主力端点（Issue #3506, PR #3680）
+static QUOTA_ENDPOINT_HEALTH: Lazy<crate::proxy::upstream::client::EndpointHealthTracker> =
+    Lazy::new(|| {
+        crate::proxy::upstream::client::EndpointHealthTracker::new(std::time::Duration::from_secs(
+            60,
+        ))
+    });
+
+pub fn get_quota_endpoint_health() -> &'static crate::proxy::upstream::client::EndpointHealthTracker
+{
+    &QUOTA_ENDPOINT_HEALTH
+}
 
 // Quota API endpoints (fallback order: Daily → Sandbox → Prod)
 //
@@ -136,14 +152,14 @@ async fn fetch_project_id(
 ) -> (Option<String>, Option<String>) {
     let client = create_standard_client(account_id).await;
     let meta = json!({"metadata": {"ideType": "ANTIGRAVITY"}});
-    let health_tracker = crate::proxy::upstream::client::get_global_endpoint_health();
+    let health_tracker = get_quota_endpoint_health();
     let candidate_endpoints =
         health_tracker.get_ordered_endpoints(&CLOUD_CODE_LOAD_PROJECT_ENDPOINTS);
 
     for (ep_idx, ep_url) in candidate_endpoints.iter().enumerate() {
         let res = client
             .post(*ep_url)
-            .timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(15))
             .header(
                 rquest::header::AUTHORIZATION,
                 format!("Bearer {}", access_token),
@@ -297,7 +313,7 @@ pub async fn fetch_quota_with_cache(
     };
 
     let mut last_error: Option<AppError> = None;
-    let health_tracker = crate::proxy::upstream::client::get_global_endpoint_health();
+    let health_tracker = get_quota_endpoint_health();
     let candidate_endpoints = health_tracker.get_ordered_endpoints(&QUOTA_API_ENDPOINTS);
 
     for (ep_idx, ep_url) in candidate_endpoints.iter().enumerate() {
@@ -305,7 +321,7 @@ pub async fn fetch_quota_with_cache(
 
         match client
             .post(*ep_url)
-            .timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(15))
             .bearer_auth(access_token)
             .header(
                 rquest::header::USER_AGENT,
@@ -563,13 +579,13 @@ async fn fetch_quota_summary(
         json!({})
     };
 
-    let health_tracker = crate::proxy::upstream::client::get_global_endpoint_health();
+    let health_tracker = get_quota_endpoint_health();
     let candidate_endpoints = health_tracker.get_ordered_endpoints(&QUOTA_SUMMARY_ENDPOINTS);
 
     for (ep_idx, ep_url) in candidate_endpoints.iter().enumerate() {
         let res = client
             .post(*ep_url)
-            .timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(15))
             .bearer_auth(access_token)
             .header(
                 rquest::header::USER_AGENT,
