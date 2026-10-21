@@ -74,6 +74,9 @@ pub struct OpenAIRequest {
     // [NEW] OpenAI stream_options support (include_usage gate)
     #[serde(default, rename = "stream_options")]
     pub stream_options: Option<StreamOptions>,
+    // Responses API Structured Outputs / text config (e.g. text.format)
+    #[serde(default)]
+    pub text: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

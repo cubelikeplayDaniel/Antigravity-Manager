@@ -1067,7 +1067,38 @@ pub fn transform_openai_request_with_session(
         }
     }
 
-    if let Some(fmt) = &request.response_format {
+    let effective_response_format = request.response_format.clone().or_else(|| {
+        request.text.as_ref().and_then(|text| {
+            let format = text.get("format")?;
+            let fmt_type = format.get("type")?.as_str()?;
+            if fmt_type == "json_schema" {
+                Some(ResponseFormat {
+                    r#type: "json_schema".to_string(),
+                    json_schema: Some(ResponseFormatJSONSchema {
+                        name: format
+                            .get("name")
+                            .and_then(|n| n.as_str())
+                            .map(|s| s.to_string()),
+                        description: format
+                            .get("description")
+                            .and_then(|d| d.as_str())
+                            .map(|s| s.to_string()),
+                        schema: format.get("schema").cloned(),
+                        strict: format.get("strict").and_then(|s| s.as_bool()),
+                    }),
+                })
+            } else if fmt_type == "json_object" {
+                Some(ResponseFormat {
+                    r#type: "json_object".to_string(),
+                    json_schema: None,
+                })
+            } else {
+                None
+            }
+        })
+    });
+
+    if let Some(fmt) = &effective_response_format {
         if fmt.r#type == "json_object" {
             gen_config["responseMimeType"] = json!("application/json");
         } else if fmt.r#type == "json_schema" {
@@ -1244,7 +1275,17 @@ pub fn transform_openai_request_with_session(
     // Removed auto-inject since we handle it above now if Codex passes it.
 
     if !function_declarations.is_empty() {
-        inner_request["tools"] = json!([{ "functionDeclarations": function_declarations }]);
+        if inner_request
+            .get("generationConfig")
+            .and_then(|g| g.get("responseSchema"))
+            .is_some()
+        {
+            tracing::warn!(
+                "[OpenAI-Request] Suppressing tools declaration because responseSchema is active (Gemini API incompatibility)"
+            );
+        } else {
+            inner_request["tools"] = json!([{ "functionDeclarations": function_declarations }]);
+        }
     }
 
     // [tool_choice] 客户端有就传，没有就不传：

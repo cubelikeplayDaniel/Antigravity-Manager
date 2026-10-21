@@ -831,6 +831,87 @@ fn responses_usage_value(chat_response: &OpenAIResponse) -> Value {
         })
 }
 
+/// 剥离 Markdown 代码块围栏（如 ```json ... ```），确保 Codex Desktop 的原生 JSON.parse 正常解析结构化输出。
+/// 仅当剥离围栏后的文本为合法的 JSON 对象/数组时才执行剥离；若为普通代码片段则保留原样。
+pub(crate) fn strip_markdown_code_fences(text: &str) -> String {
+    let trimmed = text.trim();
+    if serde_json::from_str::<serde_json::Value>(trimmed).is_ok() {
+        return trimmed.to_string();
+    }
+
+    if trimmed.starts_with("```") {
+        if let Some(first_newline) = trimmed.find('\n') {
+            let after_first_line = &trimmed[first_newline + 1..];
+            if let Some(last_fence) = after_first_line.rfind("```") {
+                let inner = after_first_line[..last_fence].trim();
+                if serde_json::from_str::<serde_json::Value>(inner).is_ok() {
+                    return inner.to_string();
+                }
+            }
+        }
+    }
+
+    if let Some(start_fence) = trimmed.find("```json") {
+        let after_start = &trimmed[start_fence + 7..];
+        if let Some(first_newline) = after_start.find('\n') {
+            let body = &after_start[first_newline + 1..];
+            if let Some(end_fence) = body.find("```") {
+                let inner = body[..end_fence].trim();
+                if serde_json::from_str::<serde_json::Value>(inner).is_ok() {
+                    return inner.to_string();
+                }
+            }
+        }
+    }
+
+    text.to_string()
+}
+
+/// 提取 Responses API 中的 `text.format`（Structured Outputs），将其归一化映射为 `response_format`。
+/// 同时针对后台结构化生成任务自动移除可能遗留的工具声明，避免触发 Gemini 400 校验冲突。
+pub(crate) fn extract_responses_text_format(body: &mut Value) {
+    if let Some(format_val) = body.get("text").and_then(|t| t.get("format")) {
+        let format_type = format_val
+            .get("type")
+            .and_then(|t| t.as_str())
+            .unwrap_or("");
+        if format_type == "json_schema" {
+            let schema = format_val.get("schema").cloned();
+            let name = format_val
+                .get("name")
+                .and_then(|n| n.as_str())
+                .map(|s| s.to_string());
+            let strict = format_val.get("strict").and_then(|s| s.as_bool());
+            let description = format_val
+                .get("description")
+                .and_then(|d| d.as_str())
+                .map(|s| s.to_string());
+
+            if body.get("response_format").is_none() {
+                body["response_format"] = json!({
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": name,
+                        "description": description,
+                        "strict": strict,
+                        "schema": schema
+                    }
+                });
+            }
+            if let Some(obj) = body.as_object_mut() {
+                obj.remove("tools");
+            }
+        } else if format_type == "json_object" {
+            if body.get("response_format").is_none() {
+                body["response_format"] = json!({ "type": "json_object" });
+            }
+            if let Some(obj) = body.as_object_mut() {
+                obj.remove("tools");
+            }
+        }
+    }
+}
+
 fn convert_chat_response_to_responses(chat_response: &OpenAIResponse) -> Value {
     let mut output = Vec::new();
 
@@ -855,17 +936,18 @@ fn convert_chat_response_to_responses(chat_response: &OpenAIResponse) -> Value {
             .as_ref()
             .map(openai_content_text)
             .unwrap_or_default();
+        let cleaned_text = strip_markdown_code_fences(&text);
         let refusal = choice
             .message
             .refusal
             .as_deref()
             .filter(|refusal| !refusal.is_empty());
-        if !text.is_empty() || refusal.is_some() {
+        if !cleaned_text.is_empty() || refusal.is_some() {
             let mut content = Vec::new();
-            if !text.is_empty() {
+            if !cleaned_text.is_empty() {
                 content.push(json!({
                     "type": "output_text",
-                    "text": text,
+                    "text": cleaned_text,
                     "annotations": []
                 }));
             }
@@ -1212,10 +1294,12 @@ data: {"type":"response.failed","response":{"status":"failed","error":{"code":"u
             .find(|part| part.get("inlineData").is_some())
             .expect("inline image data");
 
-        assert_eq!(
-            function_response["functionResponse"]["response"]["result"],
-            "image generated"
-        );
+        let resp_obj = &function_response["functionResponse"]["response"];
+        let output_val = resp_obj
+            .get("output")
+            .or_else(|| resp_obj.get("result"))
+            .and_then(|v| v.as_str());
+        assert_eq!(output_val, Some("image generated"));
         assert!(!function_response.to_string().contains("data:image/"));
         assert_eq!(inline_data["inlineData"]["mimeType"], "image/png");
         assert_eq!(inline_data["inlineData"]["data"], "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==");
@@ -1467,6 +1551,129 @@ data: {"type":"response.failed","response":{"status":"failed","error":{"code":"u
         assert!(response["output"][1]["content"][0]["text"]
             .as_str()
             .is_some_and(|text| !text.contains("Internal analysis")));
+    }
+
+    #[test]
+    fn test_strip_markdown_code_fences_for_structured_outputs() {
+        use super::strip_markdown_code_fences;
+
+        // 1. Bare JSON passes through untouched
+        let bare = r#"{"title": "Bug Fix", "description": "Fixes issue #3710"}"#;
+        assert_eq!(strip_markdown_code_fences(bare), bare);
+
+        // 2. Wrapped in ```json ... ``` is cleanly stripped
+        let wrapped_json =
+            "```json\n{\"title\": \"Bug Fix\", \"description\": \"Fixes issue #3710\"}\n```";
+        assert_eq!(strip_markdown_code_fences(wrapped_json), bare);
+
+        // 3. Wrapped in ``` ... ``` without language tag
+        let wrapped_plain =
+            "```\n{\"title\": \"Bug Fix\", \"description\": \"Fixes issue #3710\"}\n```";
+        assert_eq!(strip_markdown_code_fences(wrapped_plain), bare);
+
+        // 4. Prefaced with conversational text followed by ```json ... ```
+        let prefaced = "Here is the title JSON:\n```json\n{\"title\": \"Bug Fix\", \"description\": \"Fixes issue #3710\"}\n```";
+        assert_eq!(strip_markdown_code_fences(prefaced), bare);
+
+        // 5. Non-JSON code fence is preserved (NOT stripped)
+        let non_json = "```rust\nfn main() { println!(\"Hello\"); }\n```";
+        assert_eq!(strip_markdown_code_fences(non_json), non_json);
+    }
+
+    #[test]
+    fn test_responses_api_text_format_mapping_and_tool_isolation() {
+        use super::convert_codex_to_openai_request;
+
+        let input = json!({
+            "model": "gpt-6-luna",
+            "reasoning": { "effort": "low" },
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "codex_output_schema",
+                    "strict": true,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "title": { "type": "string" },
+                            "description": { "type": "string" }
+                        },
+                        "required": ["title", "description"],
+                        "additionalProperties": false
+                    }
+                }
+            },
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Read file contents",
+                    "parameters": { "type": "object" }
+                }
+            }],
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": "Summarize this session."
+                }
+            ]
+        });
+
+        let converted = convert_codex_to_openai_request(input);
+
+        // 验证 1：text.format 被映射为标准的 response_format (type: json_schema)
+        let rf = converted
+            .get("response_format")
+            .expect("response_format should be present");
+        assert_eq!(rf["type"], "json_schema");
+        assert_eq!(rf["json_schema"]["name"], "codex_output_schema");
+        assert_eq!(rf["json_schema"]["strict"], true);
+        assert_eq!(rf["json_schema"]["schema"]["type"], "object");
+
+        // 验证 2：后台结构化生成自动移除遗留的 tools，防止与 upstream Gemini responseSchema 冲突
+        assert!(
+            converted.get("tools").is_none(),
+            "tools must be removed for structured text outputs"
+        );
+
+        // 验证 3：reasoning.effort: low 得到完整保留
+        assert_eq!(converted["reasoning"]["effort"], "low");
+    }
+
+    #[test]
+    fn test_responses_api_convert_chat_response_strips_markdown_fences() {
+        use super::convert_chat_response_to_responses;
+
+        let chat_response = serde_json::from_value(json!({
+            "id": "chatcmpl_title",
+            "object": "chat.completion",
+            "created": 1,
+            "model": "gemini-3.8-flash-high",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "```json\n{\"title\": \"Issue 3710\", \"description\": \"Structured outputs\"}\n```",
+                    "reasoning_content": null
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": { "prompt_tokens": 5, "completion_tokens": 10, "total_tokens": 15 }
+        }))
+        .expect("chat response");
+
+        let responses_val = convert_chat_response_to_responses(&chat_response);
+        let output_text = responses_val["output"][0]["content"][0]["text"]
+            .as_str()
+            .expect("text");
+        assert_eq!(
+            output_text,
+            "{\"title\": \"Issue 3710\", \"description\": \"Structured outputs\"}"
+        );
+        // 验证原生 JSON.parse 不会报错
+        let parsed: Value = serde_json::from_str(output_text).expect("valid bare JSON");
+        assert_eq!(parsed["title"], "Issue 3710");
     }
 
     #[test]
@@ -3981,6 +4188,8 @@ pub async fn handle_completions(
     } else {
         (Vec::new(), String::new())
     };
+
+    extract_responses_text_format(&mut body);
 
     let mut openai_req: OpenAIRequest = match serde_json::from_value(body) {
         Ok(req) => req,
@@ -7588,6 +7797,7 @@ fn convert_codex_to_openai_request(mut body: Value) -> Value {
         obj.remove("input");
         obj.remove("instructions");
     }
+    extract_responses_text_format(&mut body);
     body
 }
 
