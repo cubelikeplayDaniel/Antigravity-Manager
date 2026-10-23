@@ -855,7 +855,7 @@ pub(crate) fn strip_markdown_code_fences(text: &str) -> String {
         let after_start = &trimmed[start_fence + 7..];
         if let Some(first_newline) = after_start.find('\n') {
             let body = &after_start[first_newline + 1..];
-            if let Some(end_fence) = body.find("```") {
+            if let Some(end_fence) = body.rfind("```") {
                 let inner = body[..end_fence].trim();
                 if serde_json::from_str::<serde_json::Value>(inner).is_ok() {
                     return inner.to_string();
@@ -865,51 +865,6 @@ pub(crate) fn strip_markdown_code_fences(text: &str) -> String {
     }
 
     text.to_string()
-}
-
-/// 提取 Responses API 中的 `text.format`（Structured Outputs），将其归一化映射为 `response_format`。
-/// 同时针对后台结构化生成任务自动移除可能遗留的工具声明，避免触发 Gemini 400 校验冲突。
-pub(crate) fn extract_responses_text_format(body: &mut Value) {
-    if let Some(format_val) = body.get("text").and_then(|t| t.get("format")) {
-        let format_type = format_val
-            .get("type")
-            .and_then(|t| t.as_str())
-            .unwrap_or("");
-        if format_type == "json_schema" {
-            let schema = format_val.get("schema").cloned();
-            let name = format_val
-                .get("name")
-                .and_then(|n| n.as_str())
-                .map(|s| s.to_string());
-            let strict = format_val.get("strict").and_then(|s| s.as_bool());
-            let description = format_val
-                .get("description")
-                .and_then(|d| d.as_str())
-                .map(|s| s.to_string());
-
-            if body.get("response_format").is_none() {
-                body["response_format"] = json!({
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": name,
-                        "description": description,
-                        "strict": strict,
-                        "schema": schema
-                    }
-                });
-            }
-            if let Some(obj) = body.as_object_mut() {
-                obj.remove("tools");
-            }
-        } else if format_type == "json_object" {
-            if body.get("response_format").is_none() {
-                body["response_format"] = json!({ "type": "json_object" });
-            }
-            if let Some(obj) = body.as_object_mut() {
-                obj.remove("tools");
-            }
-        }
-    }
 }
 
 fn convert_chat_response_to_responses(chat_response: &OpenAIResponse) -> Value {
@@ -1294,12 +1249,10 @@ data: {"type":"response.failed","response":{"status":"failed","error":{"code":"u
             .find(|part| part.get("inlineData").is_some())
             .expect("inline image data");
 
-        let resp_obj = &function_response["functionResponse"]["response"];
-        let output_val = resp_obj
-            .get("output")
-            .or_else(|| resp_obj.get("result"))
-            .and_then(|v| v.as_str());
-        assert_eq!(output_val, Some("image generated"));
+        assert_eq!(
+            function_response["functionResponse"]["response"]["result"],
+            "image generated"
+        );
         assert!(!function_response.to_string().contains("data:image/"));
         assert_eq!(inline_data["inlineData"]["mimeType"], "image/png");
         assert_eq!(inline_data["inlineData"]["data"], "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==");
@@ -1575,7 +1528,18 @@ data: {"type":"response.failed","response":{"status":"failed","error":{"code":"u
         let prefaced = "Here is the title JSON:\n```json\n{\"title\": \"Bug Fix\", \"description\": \"Fixes issue #3710\"}\n```";
         assert_eq!(strip_markdown_code_fences(prefaced), bare);
 
-        // 5. Non-JSON code fence is preserved (NOT stripped)
+        // 5. Prefaced with conversational text and inner JSON containing backticks (rfind resilience)
+        let inner_with_backticks = r#"{"title": "Code Summary", "description": "Contains ```rust\nfn main() {}\n``` inside JSON"}"#;
+        let prefaced_with_inner_backticks = format!(
+            "Here is the summary:\n```json\n{}\n```",
+            inner_with_backticks
+        );
+        assert_eq!(
+            strip_markdown_code_fences(&prefaced_with_inner_backticks),
+            inner_with_backticks
+        );
+
+        // 6. Non-JSON code fence is preserved (NOT stripped)
         let non_json = "```rust\nfn main() { println!(\"Hello\"); }\n```";
         assert_eq!(strip_markdown_code_fences(non_json), non_json);
     }
@@ -1583,6 +1547,8 @@ data: {"type":"response.failed","response":{"status":"failed","error":{"code":"u
     #[test]
     fn test_responses_api_text_format_mapping_and_tool_isolation() {
         use super::convert_codex_to_openai_request;
+        use crate::proxy::mappers::openai::models::OpenAIRequest;
+        use crate::proxy::mappers::openai::request::transform_openai_request_with_session;
 
         let input = json!({
             "model": "gpt-6-luna",
@@ -1621,24 +1587,43 @@ data: {"type":"response.failed","response":{"status":"failed","error":{"code":"u
         });
 
         let converted = convert_codex_to_openai_request(input);
-
-        // 验证 1：text.format 被映射为标准的 response_format (type: json_schema)
-        let rf = converted
-            .get("response_format")
-            .expect("response_format should be present");
-        assert_eq!(rf["type"], "json_schema");
-        assert_eq!(rf["json_schema"]["name"], "codex_output_schema");
-        assert_eq!(rf["json_schema"]["strict"], true);
-        assert_eq!(rf["json_schema"]["schema"]["type"], "object");
-
-        // 验证 2：后台结构化生成自动移除遗留的 tools，防止与 upstream Gemini responseSchema 冲突
-        assert!(
-            converted.get("tools").is_none(),
-            "tools must be removed for structured text outputs"
+        let openai_req: OpenAIRequest =
+            serde_json::from_value(converted).expect("deserialize OpenAIRequest");
+        assert_eq!(
+            openai_req
+                .reasoning
+                .as_ref()
+                .and_then(|r| r.effort.as_deref()),
+            Some("low")
         );
 
-        // 验证 3：reasoning.effort: low 得到完整保留
-        assert_eq!(converted["reasoning"]["effort"], "low");
+        let (gemini_payload, _, _, _) = transform_openai_request_with_session(
+            &openai_req,
+            "proj-test",
+            "gemini-3.8-flash-high",
+            None,
+            "sess-test",
+            Some("sess-test"),
+            true,
+        );
+
+        let inner_req = &gemini_payload["request"];
+
+        // 验证 1：适配器层将 text.format 归一化为 generationConfig.responseMimeType 与 responseSchema
+        assert_eq!(
+            inner_req["generationConfig"]["responseMimeType"],
+            "application/json"
+        );
+        assert_eq!(
+            inner_req["generationConfig"]["responseSchema"]["type"],
+            "object"
+        );
+
+        // 验证 2：当 responseSchema 生效时，适配器层自动抑制冲突的 tools 声明
+        assert!(
+            inner_req.get("tools").is_none(),
+            "tools must be suppressed in Gemini payload when responseSchema is active"
+        );
     }
 
     #[test]
@@ -4188,8 +4173,6 @@ pub async fn handle_completions(
     } else {
         (Vec::new(), String::new())
     };
-
-    extract_responses_text_format(&mut body);
 
     let mut openai_req: OpenAIRequest = match serde_json::from_value(body) {
         Ok(req) => req,
@@ -7797,7 +7780,6 @@ fn convert_codex_to_openai_request(mut body: Value) -> Value {
         obj.remove("input");
         obj.remove("instructions");
     }
-    extract_responses_text_format(&mut body);
     body
 }
 
