@@ -124,8 +124,9 @@ static RE_IDENTITY_DECLARATION: Lazy<Regex> = Lazy::new(|| {
         // 英文支：开场白（人称开场及扮演式） + 可选名词短语 + 动词 + 归属对象
         r"(?i:\b(?:you\s+are|you're|i\s+am|i'm|act\s+as)\b[\s,，:：]*)",
         r"(?i:(?:an?\s+)?(?:[\w'\-]+[\s,，]+){0,8}(?:ai[\s,，]+)?(?:agent\b|assistant\b|ai\b|tool\b|cli\b|programmer\b|companion\b|engineer\b|bot\b))?",
-        // 动词前导：支持包含版本号小数点的模型名/名字 (如 Grok 4.6, GPT-5.2)，避免使用不支持的零宽断言
-        r"(?i:(?:[^\s.!?。！？\r\n<>]|\d+\.\d+|[\t ]){0,25}?(?:\b(?:created|built|made|developed|designed|trained|powered|maintained|published|released|provided|authored|written)\s+(?:by|on|upon|at|for)\s+|\bby\s+|based\s+on\s+|running\s+(?:inside|in|within|on)\s+|integrated\s+(?:into|in)\s+))",
+        // 动词前导：支持短名称/版本号 (如 Grok 4.6) 及可选逗号/从句引导词 (如 ", created by" 或 ", which is built by")
+        // 严禁跨越逗号包含新主语或连词 (如 ", and the config was created by")，桥接字符类严格排除逗号
+        r"(?i:(?:[^\s.,，!?。！？;；\r\n<>]|\d+\.\d+|[\t ]){0,15}?[\s,，]*(?:(?:which|that|who)\s+(?:is|was)\s+)?(?:\b(?:created|built|made|developed|designed|trained|powered|maintained|published|released|provided|authored|written)\s+(?:by|on|upon|at|for)\s+|\bby\s+|based\s+on\s+|running\s+(?:inside|in|within|on)\s+|integrated\s+(?:into|in)\s+))",
         // 归属对象：支持跨越数字间的版本号点号 (如 3.8, 4.5) 直到句读边界
         r"(?:[^\s.,，。!?！？;；\r\n<>]|\d+\.\d+|[\t ])+",
         r"|",
@@ -266,6 +267,13 @@ const SYSTEM_PROMPT_END_MARKERS: [&str; 2] = ["--- [SYSTEM_PROMPT_END] ---", "[S
 /// 管道自身的官方身份文本（全局提示词混入时整段剥掉，避免重复声明身份）
 const SELF_IDENTITY_BLOCK: &str = "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.\nYou are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.\n**Absolute paths only**\n**Proactiveness**";
 
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum SanitizerScope {
+    System,
+    LeadingUser,
+    General,
+}
+
 pub struct PromptSanitizer;
 
 impl PromptSanitizer {
@@ -351,16 +359,14 @@ impl PromptSanitizer {
         text
     }
 
-    /// System 轨：把系统提示词头部窗口内的「身份归属声明句」与已知客户端开场白归一化为官方 Antigravity 身份。
-    ///
-    /// 归一化规则（广谱、协议无关）：命中 `RE_IDENTITY_DECLARATION` 或 `RE_KNOWN_CLIENT_DECLARATION` 的声明句
-    /// 整体替换为 `OFFICIAL_ANTIGRAVITY_IDENTITY`；若原文以逗号续写功能指令，则保留逗号，续写内容逐字不动。
-    /// 代码块（``` 与行内 `）内的身份文本 100% 豁免，头部窗口之后的原文逐字保留。
-    /// 归一化一段文本内部的所有身份归属声明句、已知客户端开场白与竞品厂牌为官方 Antigravity / Google 声明
-    fn normalize_text_identity(text: &str) -> String {
+    /// System / User 轨文本身份声明归一化：
+    /// 归一化一段文本内部的所有身份归属声明句与已知客户端开场白为官方 Antigravity 声明。
+    /// 若 `replace_brands` 为 true（System 轨专用），则额外将正文中的竞品厂牌替换为 Google；
+    /// 若为 false（User 轨专用），绝不碰触任何竞品厂牌名称，100% 捍卫用户业务提问的原貌。
+    fn normalize_text_identity(text: &str, replace_brands: bool) -> String {
         let matches_broad = RE_IDENTITY_DECLARATION.is_match(text);
         let matches_known = RE_KNOWN_CLIENT_DECLARATION.is_match(text);
-        let matches_brands = RE_COMPETITOR_BRANDS.is_match(text);
+        let matches_brands = replace_brands && RE_COMPETITOR_BRANDS.is_match(text);
         if !matches_broad && !matches_known && !matches_brands {
             return text.to_string();
         }
@@ -392,9 +398,14 @@ impl PromptSanitizer {
         });
 
         // 2.3 竞品厂牌（OpenAI、Anthropic、Qwen、字节跳动、腾讯、小米、华为等）统一归一化为 Google
-        let pass3 = RE_COMPETITOR_BRANDS.replace_all(&pass2, "Google");
-
-        let normalized = pass3.into_owned();
+        // 铁律：仅在系统轨（replace_brands == true）执行，用户轨绝对严禁替换竞品厂牌！
+        let normalized = if replace_brands {
+            RE_COMPETITOR_BRANDS
+                .replace_all(&pass2, "Google")
+                .into_owned()
+        } else {
+            pass2.into_owned()
+        };
 
         // 步骤 3：单趟无递归还原受保护的代码块
         let restored = RE_CODE_BLOCK_PLACEHOLDER
@@ -428,8 +439,8 @@ impl PromptSanitizer {
             return text.to_string();
         }
 
-        // 步骤 1：先按标准清洗逻辑归一化整段文本中的身份声明
-        let pass1 = Self::normalize_text_identity(text);
+        // 步骤 1：先按标准清洗逻辑归一化整段文本中的身份声明与厂牌 (replace_brands = true)
+        let pass1 = Self::normalize_text_identity(text, true);
 
         // 步骤 2：若发现有 XML 风格标签，深入到任意 <xxx ...> ... </xxx> 内部匹配其内容
         // 预先保护 pass1 中的代码块，确保标签替换绝不破坏代码
@@ -456,7 +467,7 @@ impl PromptSanitizer {
                 return caps[0].to_string();
             }
 
-            let normalized_inner = Self::normalize_text_identity(inner);
+            let normalized_inner = Self::normalize_text_identity(inner, true);
             if normalized_inner != inner {
                 format!("{}{}{}", &caps[1], normalized_inner, &caps[4])
             } else {
@@ -474,6 +485,21 @@ impl PromptSanitizer {
         });
 
         restored.into_owned()
+    }
+
+    /// User 轨：把首轮对话（或客户端注入的预置提示词）中的「身份归属声明句」与已知客户端开场白归一化为官方 Antigravity 身份。
+    /// 铁律：绝对严禁执行竞品厂牌替换（replace_brands = false），用户提问中的 OpenAI、Anthropic、
+    /// 腾讯、字节跳动等自然语言 100% 保持原始状态！
+    pub fn normalize_user_identity(text: &str) -> String {
+        let lower = text.to_lowercase();
+        if !IDENTITY_FAST_MARKERS
+            .iter()
+            .any(|marker| lower.contains(marker))
+        {
+            return text.to_string();
+        }
+
+        Self::normalize_text_identity(text, false)
     }
 
     /// 清洗 parts 数组中的所有文本节点，并严格捍卫：
@@ -515,7 +541,7 @@ impl PromptSanitizer {
         s.trim().to_string()
     }
 
-    fn sanitize_parts_core(parts: &mut Vec<Value>, system_scope: bool) -> usize {
+    fn sanitize_parts_core(parts: &mut Vec<Value>, scope: SanitizerScope) -> usize {
         let mut cleaned_count = 0;
 
         // 0. 物理剔除客户端注入的计费元数据 Part（issue #3452）
@@ -548,19 +574,26 @@ impl PromptSanitizer {
                 }
 
                 if let Some(text_val) = obj.get("text").and_then(Value::as_str) {
-                    // 客户端身份映射（整串等值）—— 仅系统提示词，用户轮次文本原样保留
-                    let mapped = if system_scope {
-                        Self::normalize_client_identity(text_val)
-                    } else {
-                        text_val
+                    // 客户端身份映射（整串等值）—— 仅系统提示词与首轮用户注入
+                    let mapped = match scope {
+                        SanitizerScope::System | SanitizerScope::LeadingUser => {
+                            Self::normalize_client_identity(text_val)
+                        }
+                        SanitizerScope::General => text_val,
                     };
                     // Header 轨（全文本生效）：风控伪 Header 与高危客户端指纹声明
                     let cleaned = Self::clean_text(mapped);
-                    // System 轨（仅系统提示词）：剥离管道分界标记 / 官方身份 + 身份归属声明归一化
-                    let cleaned = if system_scope {
-                        Self::normalize_system_identity(&Self::strip_pipeline_markers(&cleaned))
-                    } else {
-                        cleaned
+                    // 身份声明句归一化
+                    // 铁律：
+                    // - System 轨：剥离管道分界标记 / 官方身份 + 身份归属声明归一化 + 竞品厂牌规范化
+                    // - LeadingUser 轨：仅在命中身份归属声明句时就地归一化为官方 Antigravity 身份，绝对严禁触碰任何竞品厂牌！
+                    // - General 轨：不做身份归一化，坚决保护用户提问与模型正文
+                    let cleaned = match scope {
+                        SanitizerScope::System => {
+                            Self::normalize_system_identity(&Self::strip_pipeline_markers(&cleaned))
+                        }
+                        SanitizerScope::LeadingUser => Self::normalize_user_identity(&cleaned),
+                        SanitizerScope::General => cleaned,
                     };
                     if cleaned != text_val {
                         obj.insert("text".to_string(), Value::String(cleaned));
@@ -596,14 +629,19 @@ impl PromptSanitizer {
     }
 
     /// 内容轨清洗：仅执行 Header 轨（风控伪 Header 与高危客户端指纹声明），**不做**身份归一化。
-    /// 用于 `contents`（user / model 轮次）—— 遵循 AGENTS.md「不得剥离用户提问」。
+    /// 用于 `contents`（常规 user / model 轮次）—— 遵循 AGENTS.md「不得剥离用户提问」。
     pub fn sanitize_parts(parts: &mut Vec<Value>) -> usize {
-        Self::sanitize_parts_core(parts, false)
+        Self::sanitize_parts_core(parts, SanitizerScope::General)
     }
 
-    /// 系统轨清洗：Header 轨 + System 轨（身份归属声明归一化），仅用于 `systemInstruction`。
+    /// 首轮用户轨清洗：Header 轨 + 用户轨身份归一化（仅在命中身份归属声明时规范化身份，绝不替换任何竞品厂牌词汇）
+    pub fn sanitize_leading_user_parts(parts: &mut Vec<Value>) -> usize {
+        Self::sanitize_parts_core(parts, SanitizerScope::LeadingUser)
+    }
+
+    /// 系统轨清洗：Header 轨 + System 轨（身份归属声明归一化 + 竞品厂牌全局规范化），仅用于 `systemInstruction`。
     pub fn sanitize_system_parts(parts: &mut Vec<Value>) -> usize {
-        Self::sanitize_parts_core(parts, true)
+        Self::sanitize_parts_core(parts, SanitizerScope::System)
     }
 
     /// 核心前缀保序：确保思考块严格位于 parts 数组的首位（Index 0）
@@ -676,8 +714,9 @@ impl PromptSanitizer {
         }
 
         // 2. 清洗所有对话轮次 (contents，包括 user 块与 model 块)
-        //    首个 model 轮次之前的 user 轮次（用户首条业务提问之前的提示词/预置注入块）走 System 轨深度身份归一化；
+        //    首个 model 轮次之前的 user 轮次（用户首条业务提问之前的提示词/预置注入块）走 LeadingUser 轨；
         //    有效覆盖客户端将系统提示词作为前几个 Part 放入 user 块的场景（如 user: [提示词1, 提示词2, ..., 第一条用户消息]）；
+        //    铁律：仅归一化注入的身份声明句，绝对严禁触碰任何竞品厂牌名称！
         //    模型回复及后续多轮对话正文走 Header 轨（仅剥离计费伪 Header，绝不破坏用户后续业务提问）。
         if let Some(contents) = body.get_mut("contents").and_then(Value::as_array_mut) {
             let mut seen_model_turn = false;
@@ -692,7 +731,7 @@ impl PromptSanitizer {
 
                 if let Some(parts) = turn.get_mut("parts").and_then(Value::as_array_mut) {
                     if is_leading_user_turn {
-                        cleaned_count += Self::sanitize_system_parts(parts);
+                        cleaned_count += Self::sanitize_leading_user_parts(parts);
                     } else {
                         cleaned_count += Self::sanitize_parts(parts);
                     }
@@ -1749,5 +1788,64 @@ mod tests {
         assert!(cleaned_code.contains("from anthropic import Anthropic"));
         assert!(cleaned_code.contains("# Supported by Tencent and Huawei"));
         assert!(cleaned_code.contains("client = openai.OpenAI()"));
+    }
+
+    #[test]
+    fn test_issue_3764_user_track_never_replaces_competitor_brands() {
+        // Issue #3764: 严格区分 System 轨与 User 轨
+        // systemInstruction 允许竞品厂牌替换与全局身份归一化；
+        // contents 中的 user 轮次（包括首轮）属于用户业务提问轨，坚决恪守 AGENTS.md 铁律，
+        // 绝对严禁执行竞品厂牌全局替换，杜绝将用户提问中的 OpenAI、Anthropic、Claude、ChatGPT等误篡改为 Google！
+        let mut payload = json!({
+            "systemInstruction": {
+                "parts": [
+                    { "text": "System prompt provided by OpenAI and Anthropic." }
+                ]
+            },
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        { "text": "Please compare OpenAI GPT-4o with Anthropic Claude 3.5 Sonnet, and tell me about ByteDance, Tencent, and Baidu." }
+                    ]
+                },
+                {
+                    "role": "model",
+                    "parts": [
+                        { "text": "Here is the comparison..." }
+                    ]
+                },
+                {
+                    "role": "user",
+                    "parts": [
+                        { "text": "How does ChatGPT compare to Gemini?" }
+                    ]
+                }
+            ]
+        });
+
+        PromptSanitizer::sanitize_gemini_payload(&mut payload);
+
+        // 1. systemInstruction 走了 System 轨，竞品厂牌被替换为 Google
+        let sys_text = payload["systemInstruction"]["parts"][0]["text"]
+            .as_str()
+            .unwrap();
+        assert!(sys_text.contains("Google"));
+        assert!(!sys_text.to_lowercase().contains("openai"));
+        assert!(!sys_text.to_lowercase().contains("anthropic"));
+
+        // 2. 首轮 user 块必须 100% 保留所有竞品厂牌（OpenAI, Anthropic, Claude, ByteDance, Tencent, Baidu），绝不替换为 Google！
+        let user1_text = payload["contents"][0]["parts"][0]["text"].as_str().unwrap();
+        assert!(user1_text.contains("OpenAI"));
+        assert!(user1_text.contains("Anthropic"));
+        assert!(user1_text.contains("Claude"));
+        assert!(user1_text.contains("ByteDance"));
+        assert!(user1_text.contains("Tencent"));
+        assert!(user1_text.contains("Baidu"));
+        assert!(!user1_text.contains("Google"));
+
+        // 3. 后续 user 块也必须 100% 保留 ChatGPT
+        let user2_text = payload["contents"][2]["parts"][0]["text"].as_str().unwrap();
+        assert!(user2_text.contains("ChatGPT"));
     }
 }
