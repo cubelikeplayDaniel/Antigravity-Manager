@@ -714,25 +714,52 @@ impl PromptSanitizer {
         }
 
         // 2. 清洗所有对话轮次 (contents，包括 user 块与 model 块)
-        //    首个 model 轮次之前的 user 轮次（用户首条业务提问之前的提示词/预置注入块）走 LeadingUser 轨；
-        //    有效覆盖客户端将系统提示词作为前几个 Part 放入 user 块的场景（如 user: [提示词1, 提示词2, ..., 第一条用户消息]）；
-        //    铁律：仅归一化注入的身份声明句，绝对严禁触碰任何竞品厂牌名称！
-        //    模型回复及后续多轮对话正文走 Header 轨（仅剥离计费伪 Header，绝不破坏用户后续业务提问）。
+        //    遵循 jeikl/PR#3769 架构规范与 Issue #3764 竞品品牌保护铁律：
+        //    首个 model 轮次之前的 user.part：
+        //    - 倒数第一个 user 轮次之前的所有 user 轮次：属于 Agent 注入的前置提示词块，走 System 轨深度清洗；
+        //    - 倒数第一个 user 轮次：最后一个文本 part 之前的 parts（0..split_idx）属于前置注入提示词，走 System 轨深度清洗；
+        //      最后一个文本 part 及其随行附件属于用户真实业务提问，走 LeadingUser 轨（100% 保护竞品厂牌词汇）；
+        //    - 首个 model 轮次之后的所有轮次：走 General 轨（仅剥离计费伪 Header，绝不破坏用户后续业务提问）。
         if let Some(contents) = body.get_mut("contents").and_then(Value::as_array_mut) {
-            let mut seen_model_turn = false;
+            let first_model_idx = contents
+                .iter()
+                .position(|turn| turn.get("role").and_then(Value::as_str) == Some("model"));
+            let search_limit = first_model_idx.unwrap_or(contents.len());
+            let last_leading_user_idx = contents[..search_limit]
+                .iter()
+                .rposition(|turn| turn.get("role").and_then(Value::as_str) == Some("user"));
 
-            for turn in contents.iter_mut() {
-                let role = turn.get("role").and_then(Value::as_str).unwrap_or("");
-                if role == "model" {
-                    seen_model_turn = true;
-                }
-
-                let is_leading_user_turn = !seen_model_turn && role == "user";
-
+            for (turn_idx, turn) in contents.iter_mut().enumerate() {
+                let is_user_role = turn.get("role").and_then(Value::as_str) == Some("user");
                 if let Some(parts) = turn.get_mut("parts").and_then(Value::as_array_mut) {
-                    if is_leading_user_turn {
-                        cleaned_count += Self::sanitize_leading_user_parts(parts);
+                    if Some(turn_idx) < last_leading_user_idx && is_user_role {
+                        // 倒数第一个 user 轮次之前的所有 user 轮次：Agent 注入的提示词块，走 System 轨深度清洗
+                        cleaned_count += Self::sanitize_system_parts(parts);
+                    } else if Some(turn_idx) == last_leading_user_idx {
+                        // 第一个 model 前的倒数第一个 user 轮次：
+                        // 最后一个文本 part 之前的 user.part 属于前置注入提示词（走 System 轨深度清洗），
+                        // 而最后一个文本 part 及其随行附件属于用户当前真实提问（走 LeadingUser 轨，严格保护用户正文竞品品牌）
+                        let last_text_idx = parts
+                            .iter()
+                            .rposition(|p| p.get("text").and_then(Value::as_str).is_some());
+
+                        if let Some(split_idx) = last_text_idx {
+                            if split_idx > 0 {
+                                let mut leading_parts: Vec<Value> =
+                                    parts.drain(..split_idx).collect();
+                                cleaned_count += Self::sanitize_system_parts(&mut leading_parts);
+                                cleaned_count += Self::sanitize_leading_user_parts(parts);
+                                leading_parts.append(parts);
+                                *parts = leading_parts;
+                                Self::ensure_thought_block_first(parts);
+                            } else {
+                                cleaned_count += Self::sanitize_leading_user_parts(parts);
+                            }
+                        } else {
+                            cleaned_count += Self::sanitize_leading_user_parts(parts);
+                        }
                     } else {
+                        // model 回复轮次及后续对话轮次，统一走 General 轨（仅剥离伪 Header，绝不破坏用户提问正文）
                         cleaned_count += Self::sanitize_parts(parts);
                     }
                 }
@@ -1847,5 +1874,112 @@ mod tests {
         // 3. 后续 user 块也必须 100% 保留 ChatGPT
         let user2_text = payload["contents"][2]["parts"][0]["text"].as_str().unwrap();
         assert!(user2_text.contains("ChatGPT"));
+    }
+
+    #[test]
+    fn test_jeikl_multi_part_agent_prompt_sanitization_boundary() {
+        // 验证 jeikl/PR#3769 边界：
+        // 第一个 role:model 前的倒数第一个 user 的最后一个 part 之前的所有 user.part 均作为 Agent 提示词（System 轨）清洗；
+        // 最后一个 part 及其多模态附件作为真实用户提问（LeadingUser 轨）清洗，严格保护竞品品牌与自然提问。
+
+        // 1. 同一 user 轮次内多个 Part：Part 0 为注入指令，Part 1 为真实业务提问
+        let mut multi_part_payload = json!({
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        { "text": "Instructions from Anthropic and OpenAI: You are Claude developed by Anthropic." },
+                        { "text": "Please compare Anthropic and OpenAI for translation tasks." }
+                    ]
+                }
+            ]
+        });
+        PromptSanitizer::sanitize_gemini_payload(&mut multi_part_payload);
+        let p0 = multi_part_payload["contents"][0]["parts"][0]["text"]
+            .as_str()
+            .unwrap();
+        let p1 = multi_part_payload["contents"][0]["parts"][1]["text"]
+            .as_str()
+            .unwrap();
+        // Part 0（最后一个 part 之前的提示词）：走了 System 轨，厂牌与身份全量清洗为 Google / Antigravity
+        assert!(p0.contains(OFFICIAL_ANTIGRAVITY_IDENTITY));
+        assert!(p0.contains("Google"));
+        assert!(!p0.to_lowercase().contains("anthropic"));
+        assert!(!p0.to_lowercase().contains("openai"));
+        // Part 1（最后一个 part 真实提问）：走了 LeadingUser 轨，竞品厂牌 100% 保持原样
+        assert!(p1.contains("Anthropic"));
+        assert!(p1.contains("OpenAI"));
+        assert!(!p1.contains("Google"));
+
+        // 2. 多个 user 轮次：前序 user 轮次为注入指令，末尾 user 轮次为真实提问
+        let mut multi_turn_payload = json!({
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        { "text": "Developer prompt from DeepSeek and ByteDance." }
+                    ]
+                },
+                {
+                    "role": "user",
+                    "parts": [
+                        { "text": "What are the latest updates from DeepSeek and ByteDance?" }
+                    ]
+                },
+                {
+                    "role": "model",
+                    "parts": [
+                        { "text": "Here are the updates." }
+                    ]
+                }
+            ]
+        });
+        PromptSanitizer::sanitize_gemini_payload(&mut multi_turn_payload);
+        let turn0_text = multi_turn_payload["contents"][0]["parts"][0]["text"]
+            .as_str()
+            .unwrap();
+        let turn1_text = multi_turn_payload["contents"][1]["parts"][0]["text"]
+            .as_str()
+            .unwrap();
+        // 前序 user 轮次：走 System 轨清洗为 Google
+        assert!(turn0_text.contains("Google"));
+        assert!(!turn0_text.to_lowercase().contains("deepseek"));
+        assert!(!turn0_text.contains("ByteDance"));
+        // 倒数第一个 user 轮次（用户当轮提问）：竞品厂牌 100% 保持原样
+        assert!(turn1_text.contains("DeepSeek"));
+        assert!(turn1_text.contains("ByteDance"));
+        assert!(!turn1_text.contains("Google"));
+
+        // 3. 用户提问携带多模态附件（图片在文本后方）：精准定位最后一个文本 Part 作为真实提问
+        let mut multimodal_payload = json!({
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        { "text": "System instructions provided by Anthropic." },
+                        { "text": "Analyze Anthropic and OpenAI from this diagram:" },
+                        { "inlineData": { "mimeType": "image/png", "data": "AAAA" } }
+                    ]
+                }
+            ]
+        });
+        PromptSanitizer::sanitize_gemini_payload(&mut multimodal_payload);
+        let mm_p0 = multimodal_payload["contents"][0]["parts"][0]["text"]
+            .as_str()
+            .unwrap();
+        let mm_p1 = multimodal_payload["contents"][0]["parts"][1]["text"]
+            .as_str()
+            .unwrap();
+        // 前置提示词：走 System 轨清洗
+        assert!(mm_p0.contains("Google"));
+        assert!(!mm_p0.to_lowercase().contains("anthropic"));
+        // 真实提问：文本 Part 1 保持 Anthropic 和 OpenAI 原样
+        assert!(mm_p1.contains("Anthropic"));
+        assert!(mm_p1.contains("OpenAI"));
+        // 附件 inlineData 完好保留
+        assert_eq!(
+            multimodal_payload["contents"][0]["parts"][2]["inlineData"]["mimeType"],
+            "image/png"
+        );
     }
 }
