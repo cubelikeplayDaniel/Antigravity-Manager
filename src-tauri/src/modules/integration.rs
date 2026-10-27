@@ -84,7 +84,16 @@ fn apply_account_credentials(
 ) -> Result<(), String> {
     let mut use_keyring = false;
 
-    if !is_ide {
+    // 硬防护：无论是显式指定/推导为 IDE、还是可执行文件路径命中 IDE 特征，
+    // IDE（VS Code OSS 架构）严格使用 SQLite state.vscdb 注入，绝不能因检测到可执行文件版本 >= 2.0.0
+    // 而误走系统 Keyring（Keyring 仅供原生经典版 Standalone 使用）。
+    let is_target_ide = is_ide
+        || effective_target == Some("ide")
+        || active_exe_path
+            .map(process::is_antigravity_ide_path)
+            .unwrap_or(false);
+
+    if !is_target_ide {
         // 经典原生版：自动探测版本号（优先使用预快照路径）
         match version::get_antigravity_version_with_path(
             effective_target,
@@ -128,6 +137,10 @@ fn apply_account_credentials(
                 }
             }
         }
+    } else {
+        crate::modules::logger::log_info(
+            "[Desktop] Target is Antigravity IDE (VS Code architecture), strictly enforcing SQLite injection.",
+        );
     }
 
     if use_keyring {
@@ -1486,5 +1499,30 @@ mod tests {
         let (is_ide, effective) = resolve_effective_target(None, false, false, false, None);
         assert!(!is_ide);
         assert_eq!(effective, None);
+    }
+
+    #[test]
+    fn test_resolve_effective_target_autodetect_windows_ide_exe_variants() {
+        // [FIX #3762] Windows Antigravity IDE 2.6.0 安装路径下的 Antigravity.exe
+        let (is_ide_win, effective_win) = resolve_effective_target(
+            None,
+            false,
+            false,
+            false,
+            Some("C:\\Users\\user\\AppData\\Local\\Programs\\Antigravity IDE\\Antigravity.exe"),
+        );
+        assert!(is_ide_win);
+        assert_eq!(effective_win, Some("ide"));
+
+        // PascalCase 连写 AntigravityIDE
+        let (is_ide_pascal, effective_pascal) = resolve_effective_target(
+            None,
+            false,
+            false,
+            false,
+            Some("C:\\Users\\user\\AppData\\Local\\Programs\\AntigravityIDE\\Antigravity.exe"),
+        );
+        assert!(is_ide_pascal);
+        assert_eq!(effective_pascal, Some("ide"));
     }
 }

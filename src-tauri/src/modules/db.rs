@@ -34,7 +34,13 @@ pub fn get_all_candidate_db_paths(target_ide: Option<&str>) -> Vec<PathBuf> {
     }
 
     let folder_names: &[&str] = if target_ide == Some("ide") {
-        &["Antigravity IDE", "antigravity-ide", "antigravity_ide"]
+        &[
+            "Antigravity IDE",
+            "antigravity-ide",
+            "antigravity_ide",
+            "AntigravityIDE",
+            "antigravityide",
+        ]
     } else {
         // target_ide = None 或 classic / code / cursor: 严格使用 Antigravity，严禁回退至 Antigravity IDE
         &["Antigravity"]
@@ -301,10 +307,12 @@ mod tests {
             .map(|p| p.to_string_lossy().to_string())
             .collect();
 
-        // 验证候选路径包含三种标准命名变体：空格、中划线与下划线
+        // 验证候选路径包含标准命名变体：空格、中划线、下划线与复合连写变体
         let has_space_variant = path_strings.iter().any(|s| s.contains("Antigravity IDE"));
         let has_kebab_variant = path_strings.iter().any(|s| s.contains("antigravity-ide"));
         let has_snake_variant = path_strings.iter().any(|s| s.contains("antigravity_ide"));
+        let has_pascal_variant = path_strings.iter().any(|s| s.contains("AntigravityIDE"));
+        let has_compact_variant = path_strings.iter().any(|s| s.contains("antigravityide"));
 
         assert!(
             has_space_variant,
@@ -317,6 +325,14 @@ mod tests {
         assert!(
             has_snake_variant,
             "IDE candidates must include snake-case 'antigravity_ide'"
+        );
+        assert!(
+            has_pascal_variant,
+            "IDE candidates must include PascalCase 'AntigravityIDE'"
+        );
+        assert!(
+            has_compact_variant,
+            "IDE candidates must include lowercase compact 'antigravityide'"
         );
 
         // 验证严格隔离：针对 IDE 目标绝不包含纯经典版 'Antigravity/User/globalStorage' 路径

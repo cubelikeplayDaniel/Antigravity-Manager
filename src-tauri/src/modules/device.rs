@@ -43,7 +43,13 @@ pub fn get_storage_path(target_ide: Option<&str>) -> Result<PathBuf, String> {
     }
 
     let folder_names: &[&str] = if target_ide == Some("ide") {
-        &["Antigravity IDE", "antigravity-ide", "AntigravityIDE"]
+        &[
+            "Antigravity IDE",
+            "antigravity-ide",
+            "antigravity_ide",
+            "AntigravityIDE",
+            "antigravityide",
+        ]
     } else {
         // target_ide = None 或 classic / code / cursor: 严格使用 Antigravity，严禁回退至 Antigravity IDE
         &["Antigravity", "antigravity"]
