@@ -1044,6 +1044,45 @@ mod tests {
     }
 
     #[test]
+    fn test_multiturn_thinking_model_prevents_false_strikes() {
+        let guardian = QoSGuardian::new();
+        let acc_a = create_test_token("acc_a", "PRO");
+        let acc_b = create_test_token("acc_b", "PRO");
+        let all = vec![acc_a.clone(), acc_b.clone()];
+
+        // 注入同行基准 4.0s
+        guardian.push_sample("acc_b", 4000.0, false, false);
+
+        // Turn 1: 50K tokens
+        let _ = guardian.record_and_evaluate(
+            "acc_a",
+            Some("session_multi_turn"),
+            "PRO",
+            12000.0,
+            true,
+            Some(50_000),
+            &all,
+            |_| false,
+        );
+
+        // Turn 2: 51K tokens (热缓存增量仅 1K)，思考耗时 28s。
+        // 若 is_deep_thinking = true (思考模型)，基础阈值为 35.0s，因此 28s 不触发 Strike；
+        // 若错误判定为 false，20.15s 阈值将导致误判 Suspicious。
+        let act2 = guardian.record_and_evaluate(
+            "acc_a",
+            Some("session_multi_turn"),
+            "PRO",
+            28000.0,
+            true, // is_deep_thinking
+            Some(51_000),
+            &all,
+            |_| false,
+        );
+        assert_eq!(act2, QoSAction::None);
+        assert_eq!(guardian.get_state("acc_a"), AccountQoSState::Healthy);
+    }
+
+    #[test]
     fn test_take_expired_jails_for_probing_does_not_deadlock() {
         let guardian = Arc::new(QoSGuardian::new());
 

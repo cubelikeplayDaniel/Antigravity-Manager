@@ -622,11 +622,10 @@ pub async fn handle_generate(
                 // [TTFT 单源] 响应头耗时单独记录；流式发头时 TTFT 未知。
                 headers_ms = effective_attempt_start.elapsed().as_micros() as f64 / 1000.0;
                 ttft_ms = crate::proxy::pipeline::stream_peek::TTFT_UNKNOWN_MS;
-                let is_thinking = body
-                    .get("generationConfig")
-                    .and_then(|g| g.get("thinkingConfig"))
-                    .is_some()
-                    || mapped_model.to_lowercase().contains("thinking");
+                let is_thinking = crate::proxy::pipeline::qos::payload_enables_thinking(
+                    &body,
+                    Some(&mapped_model),
+                );
                 if let Some(effective_item) = fallback_attempts.iter_mut().find(|a| a.is_effective)
                 {
                     effective_item.duration_s = headers_ms / 1000.0;

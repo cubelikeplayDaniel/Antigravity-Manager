@@ -2782,17 +2782,12 @@ pub async fn handle_chat_completions(
                 // 仅非流式请求需要在返回前拿到首块。
                 headers_ms = effective_attempt_start.elapsed().as_micros() as f64 / 1000.0;
                 if !client_wants_stream {
-                    let is_thinking = openai_req.thinking.is_some()
+                    let is_thinking = crate::proxy::pipeline::qos::payload_enables_thinking(
+                        &gemini_body,
+                        Some(&mapped_model),
+                    ) || openai_req.thinking.is_some()
                         || openai_req.reasoning.is_some()
-                        || openai_req.reasoning_effort.is_some()
-                        || mapped_model.contains("thinking")
-                        || mapped_model.contains("o1")
-                        || mapped_model.contains("o3")
-                        || mapped_model.contains("o4")
-                        || gemini_body
-                            .get("generationConfig")
-                            .and_then(|gc| gc.get("thinkingConfig"))
-                            .is_some();
+                        || openai_req.reasoning_effort.is_some();
                     let peek_timeout_secs = crate::proxy::pipeline::budget::clamp_secs(
                         crate::proxy::pipeline::stream_peek::peek_budget_secs(
                             false,
@@ -2818,9 +2813,6 @@ pub async fn handle_chat_completions(
                             bytes, ..
                         } => {
                             ttft_ms = effective_attempt_start.elapsed().as_micros() as f64 / 1000.0;
-                            let is_thinking = effort_hint.is_some()
-                                || openai_req.model.to_lowercase().contains("thinking")
-                                || mapped_model.to_lowercase().contains("thinking");
                             crate::proxy::handlers::common::report_qos_ttft(
                                 &token_manager,
                                 &account_id,
@@ -2952,9 +2944,13 @@ pub async fn handle_chat_completions(
                     let ttft_tm = token_manager.clone();
                     let ttft_account = account_id.clone();
                     let ttft_session = session_id.clone();
-                    let ttft_is_thinking = effort_hint.is_some()
-                        || openai_req.model.to_lowercase().contains("thinking")
-                        || mapped_model.to_lowercase().contains("thinking");
+                    let ttft_is_thinking = crate::proxy::pipeline::qos::payload_enables_thinking(
+                        &gemini_body,
+                        Some(&mapped_model),
+                    ) || effort_hint.is_some()
+                        || openai_req.thinking.is_some()
+                        || openai_req.reasoning.is_some()
+                        || openai_req.reasoning_effort.is_some();
                     let ttft_tokens = estimated_input_tokens;
                     Box::pin(
                         crate::proxy::pipeline::stream_peek::wrap_stream_with_ttft_probe(
@@ -4795,10 +4791,12 @@ pub async fn handle_completions(
                     let ttft_tm = token_manager.clone();
                     let ttft_account = account_id.clone();
                     let ttft_session = session_id_str.clone();
-                    let ttft_is_thinking = openai_req.thinking.is_some()
+                    let ttft_is_thinking = crate::proxy::pipeline::qos::payload_enables_thinking(
+                        &gemini_body,
+                        Some(&mapped_model),
+                    ) || openai_req.thinking.is_some()
                         || openai_req.reasoning.is_some()
-                        || openai_req.reasoning_effort.is_some()
-                        || mapped_model.contains("thinking");
+                        || openai_req.reasoning_effort.is_some();
                     let combined_stream =
                         crate::proxy::pipeline::stream_peek::wrap_stream_with_ttft_probe(
                             openai_stream,
@@ -4922,17 +4920,12 @@ pub async fn handle_completions(
                     // 统一走 pipeline::stream_peek；超时属于时间问题（不跨账号重放），其余错误仍可换号。
                     headers_ms = effective_attempt_start.elapsed().as_micros() as f64 / 1000.0;
                     let mut first_data_chunk = None;
-                    let is_thinking = openai_req.thinking.is_some()
+                    let is_thinking = crate::proxy::pipeline::qos::payload_enables_thinking(
+                        &gemini_body,
+                        Some(&mapped_model),
+                    ) || openai_req.thinking.is_some()
                         || openai_req.reasoning.is_some()
-                        || openai_req.reasoning_effort.is_some()
-                        || mapped_model.contains("thinking")
-                        || mapped_model.contains("o1")
-                        || mapped_model.contains("o3")
-                        || mapped_model.contains("o4")
-                        || gemini_body
-                            .get("generationConfig")
-                            .and_then(|gc| gc.get("thinkingConfig"))
-                            .is_some();
+                        || openai_req.reasoning_effort.is_some();
                     let peek_timeout_secs = crate::proxy::pipeline::budget::clamp_secs(
                         crate::proxy::pipeline::stream_peek::peek_budget_secs(
                             false,

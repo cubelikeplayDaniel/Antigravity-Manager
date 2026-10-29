@@ -780,28 +780,8 @@ pub(crate) fn normalize_claude_error_status(status_code: u16) -> StatusCode {
 ///
 /// 处理 Chat 消息请求流程
 /// 判定本次请求是否启用了上游思考（供 QoS 阈值分档使用）。
-///
-/// 不能只看 Anthropic 的 `thinking` 字段：jeikcode / Codex 等客户端不发送该字段，
-/// 而是由网关按 thinking budget 配置注入 `thinkingConfig`。只按 `request.thinking`
-/// 判定，会把所有深度思考请求当成非思考请求，用 20s 阈值系统性误杀账号。
 fn request_enables_thinking(request_thinking: bool, gemini_body: &serde_json::Value) -> bool {
-    if request_thinking {
-        return true;
-    }
-    let root = gemini_body.get("request").unwrap_or(gemini_body);
-    let Some(tc) = root
-        .get("generationConfig")
-        .and_then(|g| g.get("thinkingConfig"))
-    else {
-        return false;
-    };
-    if let Some(budget) = tc.get("thinkingBudget").and_then(|v| v.as_i64()) {
-        return budget != 0;
-    }
-    if let Some(level) = tc.get("thinkingLevel").and_then(|v| v.as_str()) {
-        return !level.eq_ignore_ascii_case("off") && !level.is_empty();
-    }
-    true
+    request_thinking || crate::proxy::pipeline::qos::payload_enables_thinking(gemini_body, None)
 }
 
 pub async fn handle_messages(

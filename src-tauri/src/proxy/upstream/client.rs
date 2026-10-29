@@ -900,7 +900,12 @@ impl UpstreamClient {
         // 最大等待时间 = 请求体大小 ÷ 上传带宽 × (1 + 额外等待系数)
         let transfer_secs = (body_len as f64) / (effective_bps as f64);
         let wait_secs = transfer_secs * (1.0 + cfg.extra_wait_ratio.max(0.0));
-        let budget = (wait_secs.ceil() as u64).max(5);
+        let min_floor = if body_len >= crate::proxy::pipeline::budget::REPLAY_GUARD_BODY_BYTES {
+            15
+        } else {
+            5
+        };
+        let budget = (wait_secs.ceil() as u64).max(min_floor);
         (budget, source)
     }
 
@@ -1179,8 +1184,9 @@ impl UpstreamClient {
             .saturating_mul(endpoint_attempt_limit as u64)
             .saturating_add(first_byte_total_secs);
 
-        // 停滞超时：上传时因网络错误持续卡死的超时时间；若最大等待时间更短，则自动取最大等待时间
-        let stall_secs = cfg.stall_secs.min(upload_budget_secs).max(3);
+        // 停滞超时：上传阶段单次持续无进展超时。不随 body 体积估算结果被挤压到极小值，
+        // 至少给足建连与握手宽限（max connect_secs）。
+        let stall_secs = cfg.stall_secs.max(cfg.connect_secs);
 
         UpstreamTimeoutPlan {
             upload_budget_secs,
@@ -1835,7 +1841,9 @@ impl UpstreamClient {
                             && !has_next_for_send_stage
                         {
                             Some(crate::proxy::pipeline::terminal::UpstreamTerminal::FirstByte)
-                        } else if terminal_large_body_failure {
+                        } else if send_stage == SendStage::Upload
+                            && (!has_next_for_send_stage || terminal_large_body_failure)
+                        {
                             Some(crate::proxy::pipeline::terminal::UpstreamTerminal::Upload)
                         } else {
                             None
@@ -2480,6 +2488,20 @@ mod tests {
             small_plan.upload_budget_secs * small_plan.endpoint_attempt_limit as u64
                 + small_plan.first_byte_total_secs
         );
+        assert_eq!(
+            small_plan.stall_secs, 45,
+            "stall_secs must not be squeezed down by small body upload budget"
+        );
+
+        // 500KB 左右触发重放护栏检查的体积，上传预算必须有保底（至少 15s），且 stall_secs 不被挤压
+        let medium_plan = UpstreamClient::plan_upstream_timeouts_with_observed(
+            PayloadMediaKind::TextChat,
+            501_938,
+            &cfg,
+            None,
+        );
+        assert!(medium_plan.upload_budget_secs >= 15);
+        assert_eq!(medium_plan.stall_secs, 45);
 
         // 大体积请求默认仅允许 1 个端点，抑制同一大 body 重传放大
         let big_plan = UpstreamClient::plan_upstream_timeouts_with_observed(

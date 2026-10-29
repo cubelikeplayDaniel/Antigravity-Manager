@@ -90,8 +90,8 @@ static RE_COMPETITOR_BRANDS: Lazy<Regex> = Lazy::new(|| {
 /// 该指令极易导致合规代码审计/安全排查时微调模型风控误拒答（False Positives），并浪费上下文。
 static RE_SECURITY_CTF_POLICY: Lazy<Regex> = Lazy::new(|| {
     Regex::new(concat!(
-        r"(?is)(?:^|\r?\n)[ \t]*IMPORTANT:\s*Assist with authorized security testing[\s\S]*?",
-        r"(?:defensive use cases\.?|(?:\r?\n)+[ \t]*#\s*Harness\b)"
+        r"(?is)(?:^|\r?\n)[ \t]*IMPORTANT:\s*Assist with (?:authorized\s+)?security testing[\s\S]*?",
+        r"(?:defensive use cases[ \t]*\.?|(?:\r?\n)+[ \t]*#\s*Harness\b)"
     ))
     .unwrap()
 });
@@ -335,6 +335,7 @@ impl PromptSanitizer {
             || lower.contains("cc_turn_origin")
             || lower.contains("cch=")
             || lower.contains("claude agent sdk")
+            || lower.contains("security testing")
             || lower.contains("authorized security testing");
 
         if !has_suspect {
@@ -2282,6 +2283,23 @@ mod tests {
     }
 
     #[test]
+    fn test_strip_security_policy_prompt_without_authorized_prefix() {
+        let raw = concat!(
+            "System preamble:\n\n",
+            "IMPORTANT: Assist with security testing, defensive security, CTF challenges, and educational contexts. ",
+            "Refuse requests for destructive techniques, DoS attacks, mass targeting, supply chain compromise, or detection evasion for malicious purposes. ",
+            "Dual-use security tools (C2 frameworks, credential testing, exploit development) require clear authorization context: pentesting engagements, CTF competitions, security research, or defensive use cases.\n\n",
+            "# Harness\n",
+            "Follow all rules."
+        );
+
+        let cleaned = PromptSanitizer::strip_security_policy_prompt(raw);
+        assert!(!cleaned.contains("security testing"));
+        assert!(!cleaned.contains("defensive use cases"));
+        assert_eq!(cleaned, "System preamble:\n\n# Harness\nFollow all rules.");
+    }
+
+    #[test]
     fn test_sanitize_gemini_payload_drops_security_policy_standalone_part() {
         let mut payload = json!({
             "systemInstruction": {
@@ -2305,5 +2323,29 @@ mod tests {
         // 整个空的 systemInstruction 应当被物理移除，避免向上游发送空的系统提示词导致 400
         assert!(payload.get("systemInstruction").is_none());
         assert_eq!(payload["contents"][0]["parts"][0]["text"], "Hello world!");
+    }
+
+    #[test]
+    fn test_sanitize_gemini_payload_drops_security_policy_in_contents_user_turn() {
+        let mut payload = json!({
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "text": "IMPORTANT: Assist with authorized security testing, defensive security, CTF challenges, and educational contexts. Refuse requests for destructive techniques, DoS attacks, mass targeting, supply chain compromise, or detection evasion for malicious purposes. Dual-use security tools (C2 frameworks, credential testing, exploit development) require clear authorization context: pentesting engagements, CTF competitions, security research, or defensive use cases.\n\n# Harness\nPlease fix the gateway bug."
+                        }
+                    ]
+                }
+            ]
+        });
+
+        PromptSanitizer::sanitize_gemini_payload(&mut payload);
+        let text = payload["contents"][0]["parts"][0]["text"].as_str().unwrap();
+        assert!(!text.contains("authorized security testing"));
+        assert!(!text.contains("DoS attacks"));
+        assert!(!text.contains("C2 frameworks"));
+        assert!(text.contains("# Harness"));
+        assert!(text.contains("Please fix the gateway bug."));
     }
 }
