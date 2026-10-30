@@ -1867,6 +1867,7 @@
         "title": "Kiểm soát truy cập an toàn",
         "desc": "Hiện đang chạy ở chế độ Web. Vui lòng nhập mật khẩu quản trị hoặc API Key để truy cập.",
         "placeholder": "Nhập mật khẩu quản trị hoặc API Key",
+        "remember_me": "Ghi nhớ thông tin đăng nhập",
         "btn_login": "Xác minh và Vào",
         "note": "Lưu ý: Nếu đã thiết lập mật khẩu quản trị riêng, vui lòng nhập mật khẩu đó; nếu không, hãy nhập API_KEY.",
         "lookup_hint": "Nếu quên, hãy chạy lệnh docker logs antigravity-manager để tìm API Key hiện tại hoặc Mật khẩu Web UI.",

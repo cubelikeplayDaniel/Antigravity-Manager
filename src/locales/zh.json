@@ -1924,6 +1924,7 @@
         "title": "安全访问控制",
         "desc": "当前运行在 Web 模式下，请输入管理密码或 API Key 以进入后台。",
         "placeholder": "请输入管理密码或 API Key",
+        "remember_me": "记住登录凭据",
         "btn_login": "验证并进入",
         "btn_verifying": "验证中...",
         "error_invalid_key": "密码或 API Key 错误，请重试",

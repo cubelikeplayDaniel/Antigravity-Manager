@@ -1851,6 +1851,7 @@
         "title": "Güvenli Erişim Kontrolü",
         "desc": "Şu anda Web modunda çalışıyor. Erişmek için lütfen yönetici parolasını veya API Anahtarını girin.",
         "placeholder": "Yönetici parolasını veya API Anahtarını girin",
+        "remember_me": "Giriş kimlik bilgilerini hatırla",
         "btn_login": "Doğrula ve Gir",
         "note": "Not: Ayarlanmış ayrı bir yönetici parolası varsa, lütfen onu girin; aksi takdirde API_KEY girin.",
         "lookup_hint": "Unuttuysanız, Mevcut API Anahtarını veya Web Kullanıcı Arayüzü Parolasını bulmak için docker logs antigravity-manager komutunu çalıştırın.",

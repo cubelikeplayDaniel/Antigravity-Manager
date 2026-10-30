@@ -1790,6 +1790,7 @@
         "title": "Kawalan Akses Selamat",
         "desc": "Berjalan dalam mod Web. Sila masukkan kata laluan pengurusan atau Kunci API untuk mengakses.",
         "placeholder": "Masukkan kata laluan pengurusan atau Kunci API",
+        "remember_me": "Ingat kelayakan log masuk",
         "btn_login": "Sahkan dan Masuk",
         "note": "Nota: Jika kata laluan pengurusan berasingan ditetapkan, sila masukkan; jika tidak, masukkan API_KEY.",
         "lookup_hint": "Jika terlupa, jalankan docker logs antigravity-manager untuk mencari Current API Key atau Web UI Password",

@@ -1938,6 +1938,7 @@
         "title": "安全存取控制",
         "desc": "當前運行在 Web 模式下，請輸入管理密碼或 API Key 以進入後台。",
         "placeholder": "請輸入管理密碼或 API Key",
+        "remember_me": "記住登入憑證",
         "btn_login": "驗證並進入",
         "btn_verifying": "驗證中...",
         "error_invalid_key": "密碼或 API Key 錯誤，請重試",
