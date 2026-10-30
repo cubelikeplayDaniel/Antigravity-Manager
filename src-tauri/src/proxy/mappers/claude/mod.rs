@@ -80,6 +80,24 @@ impl ProtocolStreamHandler for ClaudeStreamHandler {
         out
     }
 
+    fn emit_abnormal_finalize(&mut self, error_report: &StreamErrorReport) -> Vec<Bytes> {
+        let mut out = Vec::new();
+
+        // 协议守卫：若 message_stop 已发送，严禁追加任何事件帧，防止破坏客户端状态机
+        if self.state.message_stop_sent {
+            return out;
+        }
+
+        // 未产生内容中断防护：若未产生任何正文/工具调用，绝不可伪造收尾
+        if !self.state.has_content {
+            return out;
+        }
+
+        // 异常收尾终结事件：修复未闭合代码块、注入告警 Banner 并下发 stop_reason: max_tokens
+        out.extend(emit_abnormal_force_stop(&mut self.state, error_report));
+        out
+    }
+
     fn emit_initial_error(&mut self, error_report: &StreamErrorReport) -> Vec<Bytes> {
         // [FIX #3634 契约对齐] 严禁下发 overloaded_error。
         // Claude Code 2.1.293 的 PU(e) 只要检测到 overloaded_error 字符串，立即触发 30 分钟冷却并在未产生内容前进入 10 次指数退避重试风暴。
@@ -344,6 +362,57 @@ pub fn emit_force_stop(state: &mut StreamingState) -> Vec<Bytes> {
         return chunks;
     }
     vec![]
+}
+
+/// 发送异常中断强制结束事件：代码块自动闭合修复 + 双语告警提示 Banner + stop_reason: max_tokens
+pub fn emit_abnormal_force_stop(
+    state: &mut StreamingState,
+    error_report: &StreamErrorReport,
+) -> Vec<Bytes> {
+    if state.message_stop_sent {
+        return vec![];
+    }
+
+    let mut chunks = Vec::new();
+    let visible = state.thinking_acc.visible();
+    let fence_repair = crate::proxy::mappers::error_classifier::repair_unclosed_code_fence(visible);
+    let banner = error_report.abnormal_notice();
+    let mut notice_text = fence_repair.unwrap_or_default();
+    notice_text.push_str(&banner);
+
+    match state.current_block_type() {
+        BlockType::Text => {
+            chunks.push(state.emit_delta("text_delta", serde_json::json!({ "text": notice_text })));
+            chunks.extend(state.end_block());
+        }
+        BlockType::None => {
+            chunks.extend(state.start_block(
+                BlockType::Text,
+                serde_json::json!({ "type": "text", "text": "" }),
+            ));
+            chunks.push(state.emit_delta("text_delta", serde_json::json!({ "text": notice_text })));
+            chunks.extend(state.end_block());
+        }
+        _ => {
+            chunks.extend(state.end_block());
+            chunks.extend(state.start_block(
+                BlockType::Text,
+                serde_json::json!({ "type": "text", "text": "" }),
+            ));
+            chunks.push(state.emit_delta("text_delta", serde_json::json!({ "text": notice_text })));
+            chunks.extend(state.end_block());
+        }
+    }
+
+    let usage = state.last_usage.clone();
+    chunks.extend(state.emit_finish(Some("MAX_TOKENS"), usage.as_ref()));
+    if !state.message_stop_sent {
+        chunks.push(Bytes::from(
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+        ));
+        state.message_stop_sent = true;
+    }
+    chunks
 }
 
 /// Process grounding metadata from Gemini's googleSearch and emit as Claude web_search blocks
@@ -626,21 +695,25 @@ mod tests {
             "Output must contain text emitted before error"
         );
 
-        // 2. 严禁注入假截断系统提示
+        // 2. 检查是否注入醒目的双语网关异常告警 Banner
         assert!(
-            !output.contains("Response truncated by Antigravity"),
-            "Must NOT inject synthetic truncation notice into user content"
+            output.contains("网关提示 / Gateway Notice"),
+            "Must inject bilingual gateway notice on abnormal interruption"
+        );
+        assert!(
+            output.contains("可回复“继续”完成后续回答"),
+            "Must inform user how to continue"
         );
 
-        // 3. [黄金三元组契约] 必须优雅闭合 content_block 并下发 message_delta(end_turn) + message_stop，
+        // 3. [黄金三元组契约] 必须优雅闭合 content_block 并下发 message_delta(max_tokens) + message_stop，
         // 满足 qu !== null && zb && El === null，激活客户端 keepPartial 豁免逻辑，杜绝丢弃已生成 Token 与重思死循环
         assert!(
             output.contains("content_block_stop"),
             "Must close open content block with content_block_stop"
         );
         assert!(
-            output.contains(r#""stop_reason":"end_turn""#),
-            "Must emit stop_reason end_turn to satisfy terminal triad"
+            output.contains(r#""stop_reason":"max_tokens""#),
+            "Must emit stop_reason max_tokens to align with length/interruption semantics"
         );
         assert!(
             output.contains("event: message_stop"),
@@ -660,6 +733,45 @@ mod tests {
             !error_propagated,
             "Mid-stream network error must NOT propagate as raw Err after content emitted"
         );
+    }
+
+    #[tokio::test]
+    async fn test_create_claude_sse_stream_mid_stream_interruption_repairs_code_fence_and_injects_notice(
+    ) {
+        use futures::StreamExt;
+
+        let mock_stream = async_stream::stream! {
+            yield Ok::<_, String>(bytes::Bytes::from("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Here is a script:\\n```bash\\npython3 main.py --run\"}]}}]}\n\n"));
+            yield Err("error reading a body from connection: connection reset by peer".to_string());
+        };
+
+        let mut claude_stream = create_claude_sse_stream(
+            Box::pin(mock_stream),
+            "trace_code_fence_repair_test".to_string(),
+            "test@example.com".to_string(),
+            None,
+            false,
+            1_000,
+            None,
+            1,
+            None,
+            Vec::new(),
+        );
+
+        let mut all_chunks = Vec::new();
+        while let Some(result) = claude_stream.next().await {
+            if let Ok(bytes) = result {
+                all_chunks.push(String::from_utf8(bytes.to_vec()).unwrap());
+            }
+        }
+        let output = all_chunks.join("");
+
+        // 必须自动闭合代码块并附加网关告警 Banner
+        assert!(output.contains("```bash\\npython3 main.py --run"));
+        assert!(output.contains("\\n```\\n"));
+        assert!(output.contains("网关提示 / Gateway Notice"));
+        assert!(output.contains(r#""stop_reason":"max_tokens""#));
+        assert!(output.contains("event: message_stop"));
     }
 
     #[tokio::test]

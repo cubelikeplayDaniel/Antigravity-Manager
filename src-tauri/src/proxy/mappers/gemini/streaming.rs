@@ -192,6 +192,45 @@ impl ProtocolStreamHandler for GeminiStreamHandler {
         Vec::new()
     }
 
+    fn emit_abnormal_finalize(&mut self, error_report: &StreamErrorReport) -> Vec<Bytes> {
+        let mut chunks = Vec::new();
+
+        // 未产生内容中断防护：若未产生任何正文/工具调用，绝不可伪造收尾
+        if !self.has_content {
+            return chunks;
+        }
+
+        // 1. 代码块修复与提示语
+        let visible = self
+            .thinking_acc
+            .as_ref()
+            .map(|acc| acc.visible())
+            .unwrap_or("");
+        let fence_repair =
+            crate::proxy::mappers::error_classifier::repair_unclosed_code_fence(visible);
+        let banner = error_report.abnormal_notice();
+        let mut notice_text = fence_repair.unwrap_or_default();
+        notice_text.push_str(&banner);
+
+        // 2. 发送 Gemini 格式 candidate，带异常说明 text 和 finishReason: "MAX_TOKENS"
+        let recovery_json = serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [{ "text": notice_text }]
+                },
+                "finishReason": "MAX_TOKENS",
+                "index": 0
+            }]
+        });
+
+        chunks.push(Bytes::from(format!(
+            "data: {}\n\n",
+            serde_json::to_string(&recovery_json).unwrap_or_default()
+        )));
+        chunks
+    }
+
     fn emit_initial_error(&mut self, error_report: &StreamErrorReport) -> Vec<Bytes> {
         let error_json = serde_json::json!({
             "error": {
@@ -217,5 +256,70 @@ impl ProtocolStreamHandler for GeminiStreamHandler {
         if let Some(acc) = self.thinking_acc.take() {
             acc.commit(&self.session_id);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::StreamExt;
+
+    #[tokio::test]
+    async fn test_gemini_stream_abnormal_interruption_repairs_fence_and_injects_notice() {
+        let chunk1_json = serde_json::json!({
+            "response": {
+                "candidates": [{
+                    "content": {
+                        "parts": [{ "text": "Here is code:\n```rust\nfn main() {" }]
+                    }
+                }]
+            }
+        });
+
+        let items: Vec<Result<Bytes, String>> = vec![
+            Ok(Bytes::from(format!(
+                "data: {}\n\n",
+                serde_json::to_string(&chunk1_json).unwrap()
+            ))),
+            Err("error reading a body from connection: connection reset by peer".to_string()),
+        ];
+
+        let handler = GeminiStreamHandler::new(
+            Some("trace_gemini_test".to_string()),
+            "session_gemini_test".to_string(),
+            "gemini-2.5-pro".to_string(),
+            1,
+            "anchor".to_string(),
+            false,
+            None,
+            "acc@example.com".to_string(),
+            "gemini-2.5-pro".to_string(),
+        );
+
+        let lifecycle_cfg = crate::proxy::pipeline::StreamLifecycleConfig::new(
+            "gemini",
+            "test_gemini_stream_abnormal_interruption",
+            "test".to_string(),
+        );
+
+        let mut stream = crate::proxy::pipeline::run_stream_lifecycle(
+            Box::pin(futures::stream::iter(items)),
+            handler,
+            lifecycle_cfg,
+        );
+
+        let mut all_chunks = Vec::new();
+        while let Some(result) = stream.next().await {
+            if let Ok(bytes) = result {
+                all_chunks.push(String::from_utf8(bytes.to_vec()).unwrap());
+            }
+        }
+        let output = all_chunks.join("");
+
+        assert!(output.contains("__cloudCodeMeta"));
+        assert!(output.contains("```rust\\nfn main() {"));
+        assert!(output.contains("\\n```\\n"));
+        assert!(output.contains("网关提示 / Gateway Notice"));
+        assert!(output.contains("MAX_TOKENS"));
     }
 }

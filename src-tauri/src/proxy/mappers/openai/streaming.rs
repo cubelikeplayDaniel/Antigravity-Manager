@@ -457,6 +457,67 @@ impl ProtocolStreamHandler for OpenAIChatStreamHandler {
         chunks
     }
 
+    fn emit_abnormal_finalize(&mut self, error_report: &StreamErrorReport) -> Vec<Bytes> {
+        let mut chunks = Vec::new();
+
+        // 未产生内容中断防护：若未产生任何正文/工具调用，绝不可伪造收尾
+        if !self.has_content && self.emitted_tool_calls.is_empty() {
+            return chunks;
+        }
+
+        self.is_thinking_active = false;
+
+        // 1. 代码块修复与提示语
+        let visible = self.thinking_acc.visible();
+        let fence_repair =
+            crate::proxy::mappers::error_classifier::repair_unclosed_code_fence(visible);
+        let banner = error_report.abnormal_notice();
+        let mut notice_text = fence_repair.unwrap_or_default();
+        notice_text.push_str(&banner);
+
+        // 2. 发送告警正文 chunk 并将 finish_reason 置为 "length"
+        self.has_emitted_finish_reason = true;
+        let mut finish_chunk = json!({
+            "id": &self.stream_id,
+            "object": "chat.completion.chunk",
+            "created": self.created_ts,
+            "model": &self.model,
+            "choices": [{
+                "index": 0,
+                "delta": { "content": notice_text },
+                "finish_reason": "length"
+            }]
+        });
+        if !self.include_usage {
+            if let Some(usage) = self.final_usage.take() {
+                finish_chunk["usage"] = serde_json::to_value(usage).unwrap_or_default();
+            }
+        }
+        chunks.push(Bytes::from(format!(
+            "data: {}\n\n",
+            serde_json::to_string(&finish_chunk).unwrap_or_default()
+        )));
+
+        if self.include_usage {
+            if let Some(usage) = self.final_usage.take() {
+                let usage_chunk = json!({
+                    "id": &self.stream_id,
+                    "object": "chat.completion.chunk",
+                    "created": self.created_ts,
+                    "model": &self.model,
+                    "choices": [],
+                    "usage": usage
+                });
+                chunks.push(Bytes::from(format!(
+                    "data: {}\n\n",
+                    serde_json::to_string(&usage_chunk).unwrap_or_default()
+                )));
+            }
+        }
+        chunks.push(Bytes::from("data: [DONE]\n\n"));
+        chunks
+    }
+
     fn emit_initial_error(&mut self, error_report: &StreamErrorReport) -> Vec<Bytes> {
         vec![
             Bytes::from(openai_chat_error_frame(
@@ -2440,5 +2501,88 @@ mod tests {
             vec!["stop".to_string()],
             "Must emit finish_reason 'stop' before stream end to avoid finish=unknown"
         );
+    }
+
+    #[tokio::test]
+    async fn test_openai_stream_abnormal_interruption_repairs_fence_and_injects_notice() {
+        let chunk1_json = json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{ "text": "Here is code:\n```python\nprint(123)" }]
+                }
+            }]
+        });
+
+        let items: Vec<Result<Bytes, String>> = vec![
+            Ok(Bytes::from(format!("data: {}\n\n", chunk1_json))),
+            Err("error reading a body from connection: connection reset by peer".to_string()),
+        ];
+
+        let gemini_stream = Box::pin(stream::iter(items));
+
+        let mut openai_stream = create_openai_sse_stream(
+            gemini_stream,
+            "gemini-3.8-flash-high".to_string(),
+            "session-abnormal".to_string(),
+            0,
+            None,
+            false,
+        );
+
+        let mut all_chunks = Vec::new();
+        let mut got_done = false;
+        let mut finish_reasons = Vec::new();
+
+        while let Some(result) = openai_stream.next().await {
+            if let Ok(bytes) = result {
+                let s = String::from_utf8_lossy(&bytes).to_string();
+                for line in s.lines() {
+                    if line.starts_with("data: ") {
+                        if line.contains("[DONE]") {
+                            got_done = true;
+                        } else {
+                            let json_str = line.trim_start_matches("data: ").trim();
+                            if let Ok(json) = serde_json::from_str::<Value>(json_str) {
+                                all_chunks.push(json.clone());
+                                if let Some(choices) =
+                                    json.get("choices").and_then(|c| c.as_array())
+                                {
+                                    for choice in choices {
+                                        if let Some(fr) =
+                                            choice.get("finish_reason").and_then(|f| f.as_str())
+                                        {
+                                            finish_reasons.push(fr.to_string());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(got_done, "Stream must terminate with [DONE]");
+        assert_eq!(
+            finish_reasons,
+            vec!["length".to_string()],
+            "Abnormal drop must emit finish_reason: 'length'"
+        );
+
+        let all_text: String = all_chunks
+            .iter()
+            .filter_map(|json| {
+                json.get("choices")
+                    .and_then(|c| c.get(0))
+                    .and_then(|c| c.get("delta"))
+                    .and_then(|d| d.get("content"))
+                    .and_then(|t| t.as_str())
+            })
+            .collect();
+
+        assert!(all_text.contains("```python\nprint(123)"));
+        assert!(all_text.contains("\n```\n"));
+        assert!(all_text.contains("网关提示 / Gateway Notice"));
+        assert!(all_text.contains("网络传输中断"));
     }
 }
