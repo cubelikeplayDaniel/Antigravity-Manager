@@ -1824,6 +1824,7 @@
         "title": "Control de Acceso Seguro",
         "desc": "Ejecutando en modo Web. Por favor ingrese la contraseña de administración o Clave API para acceder.",
         "placeholder": "Ingrese contraseña de administración o Clave API",
+        "remember_me": "Recordar credenciales de inicio de sesión",
         "btn_login": "Verificar y Entrar",
         "btn_verifying": "Verificando...",
         "error_invalid_key": "Contraseña o clave API no válida, intente de nuevo",

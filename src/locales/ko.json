@@ -1824,6 +1824,7 @@
         "title": "안전한 액세스 제어",
         "desc": "현재 Web 모드에서 실행 중입니다. 관리 비밀번호 또는 API 키를 입력하여 액세스하십시오.",
         "placeholder": "관리 비밀번호 또는 API 키를 입력하십시오",
+        "remember_me": "로그인 정보 기억",
         "btn_login": "인증 및 입장",
         "btn_verifying": "인증 중...",
         "error_invalid_key": "비밀번호 또는 API 키가 잘못되었습니다. 다시 시도하십시오",

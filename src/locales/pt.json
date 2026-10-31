@@ -1860,6 +1860,7 @@
         "title": "Controle de Acesso Seguro",
         "desc": "Executando no modo Web. Por favor, insira a senha de administrador ou a Chave de API para acessar.",
         "placeholder": "Insira a senha de administrador ou a Chave de API",
+        "remember_me": "Lembrar credenciais de login",
         "btn_login": "Verificar e Entrar",
         "btn_verifying": "Verificando Autenticação...",
         "error_invalid_key": "Chave de acesso inválida ou expirada",

@@ -1958,6 +1958,7 @@
         "title": "Secure Access Control",
         "desc": "Running in Web mode. Please enter management password or API Key to access.",
         "placeholder": "Enter management password or API Key",
+        "remember_me": "Remember login credentials",
         "btn_login": "Verify and Enter",
         "btn_verifying": "Verifying...",
         "error_invalid_key": "Invalid password or API Key, please try again",
