@@ -3,6 +3,17 @@
 > Complete version history for Antigravity Tools. Return to project home at [README.md](README.md).
 
 *   **Version History**:
+    *   **v5.0.2-beta.2 (2026-10-31)**:
+        -   **[Multi-Agent Root Session Normalization and Key-Level Affinity Scheduling] (Fixes #3789, Thanks to @Ran-Xing)**:
+            -   **Root Session Suffix Normalization**: Solves the 100% Prompt Cache miss issue caused by multi-agent frameworks (such as Cindy, AutoGPT, LangGraph) frequently deriving transient sub-session UUIDs during plan steps. Implemented `extract_root_session_id` within `SessionScope::resolve` to automatically strip derived suffixes (`:step:N`, `:subtask:...`, `:agent:...`, `:talk:...`, `--step-N`, `::`); the affinity routing key converges to the root session to lock the upstream account and restore sub-second TTFT caching, while the store key preserves the complete sub-session ID for isolated thinking storage. (Fixes #3789, Thanks to @Ran-Xing)
+            -   **Credential-Level Affinity (AffinityScope::ApiKey)**: Extended `StickySessionConfig` with an affinity scope toggle, supporting seamless switching between `session` (default) and `api_key` modes to lock all requests under the same API token to a single account with automatic failover on 429 or quota exhaustion; supported headless override via `ANTIGRAVITY_SCHEDULING_AFFINITY_SCOPE`. (Fixes #3789)
+            -   **Contextual UI Pill Toggle & 12-Locale Support**: Added an intuitive pill toggle in the Scheduling configuration panel within ApiProxy settings, fully localized across all 12 supported languages. (Fixes #3789)
+        -   **[Remember Login Credentials in Web/Docker Mode] (Fixes #3791, PR #3792, Thanks to @cubelikeplayDaniel)**:
+            -   **Optional Credential Persistence**: Added an optional "Remember login credentials" checkbox to the Web/Docker login dialog, disabled by default to maintain shared device security; persists API Key to `localStorage` upon successful authentication, eliminating redundant re-logins on browser restart. (Fixes #3791, PR #3792, Thanks to @cubelikeplayDaniel)
+            -   **Request Fallback & 401 Listener Lifecycle Fix**: `request.ts` now prioritizes `sessionStorage` with graceful fallback to `localStorage`; resolved an existing lifecycle defect where active sessions returned prematurely and skipped registering the global `abv-unauthorized` listener. (Fixes #3791, PR #3792, Thanks to @cubelikeplayDaniel)
+        -   **[Stage Timeout Overview and Diagnostics Refinements]**:
+            -   **Clear Descriptions & Grace Semantics**: Enhanced contextual hints and documentation for the 3-stage stream lifecycle timeout state machine, clarifying transition cliff grace windows and sliding idle timeouts.
+
     *   **v5.0.2-beta.1 (2026-10-30)**:
         -   **[Large Payload Upload Stall Decoupling and Thinking QoS False Positive Fix] (Ref #3763, Fixes #3772, Ref #3768, Ref #3781, PR #3784, Thanks to @cubelikeplayDaniel)**:
             -   **Upload Stall Decoupling & Floor Guard**: Completely decoupled `stall_secs` from adaptive `upload_budget_secs`, ensuring stall detection never shrinks to 3~5s and strictly respects `max connect_secs` to avoid false stall aborts during TLS/proxy handshakes; enforced a 15s budget floor for payloads ≥256KB. (Ref #3763, PR #3784, Thanks to @cubelikeplayDaniel)

@@ -3,6 +3,17 @@
 > 完整版本历史记录。返回项目主页请查看 [README_ZH.md](README_ZH.md) | [English Changelog](CHANGELOG_EN.md)。
 
 *   **版本演进**:
+    *   **v5.0.2-beta.2 (2026-10-31)**:
+        -   **[多智能体根会话归一化与凭据级强粘性调度] (Fixes #3789, Thanks to @Ran-Xing)**:
+            -   **根会话派生后缀自动归一化**: 针对 AutoGPT、Cindy 群聊军团等多智能体协同框架在分工接力（Plan Step）中频繁派生瞬态 Session UUID 导致 Prompt Cache 击穿的痛点，在 `SessionScope::resolve` 中新增 `extract_root_session_id`，自动识别并裁剪 `:step:N`、`:subtask:...`、`:agent:...`、`:talk:...`、`--step-N` 等派生后缀；调度粘性键（`affinity_key`）自动归拢至根会话以锁定同一上游账号，彻底消除 Prompt Cache 击穿并恢复秒级首字响应；诊断与思维库存储键（`store_key`）依然保留完整子会话 ID，保障子任务上下文隔离。(Fixes #3789, Thanks to @Ran-Xing)
+            -   **凭据级强粘性模式 (AffinityScope::ApiKey)**: 在 `StickySessionConfig` 中扩展粘性路由绑定维度，支持在会话级（`session`，默认）与凭据级（`api_key`）之间热切换，允许将同一 API Key 来源的所有流量锁定在单一主账号上，并在触发 429 或配额归零时自动平滑 Failover；支持环境变量 `ANTIGRAVITY_SCHEDULING_AFFINITY_SCOPE` 无头覆盖。(Fixes #3789)
+            -   **UI 胶囊切换与 12 语言全量本地化**: 在 API 代理调度设置面板中新增粘性绑定维度胶囊切换控件，并为全部 12 种系统语言同步补齐多语言文案。(Fixes #3789)
+        -   **[Web/Docker 模式记住登录凭据选项] (Fixes #3791, PR #3792, Thanks to @cubelikeplayDaniel)**:
+            -   **可选凭据持久化**: 在 Web/Docker 模式鉴权弹窗中新增“记住登录凭据”勾选框，默认未勾选保持公共设备安全基线；认证成功后按需将 API Key 持久化至 `localStorage`，解决关闭浏览器标签页后反复输入密码的问题。(Fixes #3791, PR #3792, Thanks to @cubelikeplayDaniel)
+            -   **请求层平滑回退与 401 监听生命周期修复**: `request.ts` 请求附带凭据优先读取 `sessionStorage` 并回退 `localStorage`；修复已登录状态下因提前返回导致跳过注册 `abv-unauthorized` 全局事件监听器的既有生命周期缺陷。(Fixes #3791, PR #3792, Thanks to @cubelikeplayDaniel)
+        -   **[超时链路三阶段总览与说明文案优化]**:
+            -   **文案精炼与机制明确**: 优化出站流生命周期三阶段梯度超时状态机说明文案，明确过渡断崖与稳态推流滑动超时保底机制。
+
     *   **v5.0.2-beta.1 (2026-10-30)**:
         -   **[大请求上传超时解耦与思考模型小黑屋误封修复] (Ref #3763, Fixes #3772, Ref #3768, Ref #3781, PR #3784, Thanks to @cubelikeplayDaniel)**:
             -   **上传停滞超时解耦与保底**: 彻底解耦 `stall_secs` 与自适应 `upload_budget_secs`，停滞超时不再随体积计算缩水至 3~5s，并强制保证绝不低于连接超时 (`max connect_secs`)，杜绝 TLS 握手及代理抖动误触发停滞中断；对 ≥256KB 请求引入 15s 上传保底时间。(Ref #3763, PR #3784, Thanks to @cubelikeplayDaniel)
