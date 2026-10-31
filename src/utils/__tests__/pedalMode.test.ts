@@ -176,6 +176,40 @@ async function runTests() {
         assert(modal === null, 'No modal should appear because Gemini is suppressed');
     });
 
+    // Test 6: Disabled accounts with imminent quota are filtered out
+    await test('6. Accounts manually disabled by user are never recommended as pedal candidates', () => {
+        store.clearSuppress();
+        const disabledImminentAcc = makeAccount('acc-disabled', 'Disabled Imminent', 50, soonReset, 50, soonReset, true);
+        usePedalModeStore.setState({ active: false, pendingModal: null });
+        store.checkCandidates([acc1, disabledImminentAcc]);
+
+        const modal = usePedalModeStore.getState().pendingModal;
+        assert(modal === null, 'Disabled account must not trigger pedal candidate modal');
+    });
+
+    // Test 7: Target accounts deleted triggers auto-recovery guard
+    await test('7. Automatically exits and recovers when target accounts are deleted from account list', async () => {
+        usePedalModeStore.setState({
+            active: true,
+            targetModel: 'gemini',
+            targetAccountIds: ['acc-ghost'],
+            snapshotDisabledIds: ['acc-2'],
+            temporarilyDisabledIds: ['acc-1'],
+        });
+
+        const toggled: Array<{ id: string; enable: boolean }> = [];
+        const mockToggle = async (id: string, enable: boolean) => {
+            toggled.push({ id, enable });
+        };
+
+        // Acc-ghost is missing from accounts list
+        await store.checkAndAutoRecover([acc1, acc2], mockToggle);
+
+        const state = usePedalModeStore.getState();
+        assert(state.active === false, 'Should automatically exit pedal mode');
+        assert(toggled.some(t => t.id === 'acc-1' && t.enable === true), 'acc-1 should be restored');
+    });
+
     console.log(`\nPedal Mode Tests Summary: ${passed} passed, ${failed} failed.`);
     if (failed > 0) {
         throw new Error(`Pedal Mode tests failed: ${failed}`);

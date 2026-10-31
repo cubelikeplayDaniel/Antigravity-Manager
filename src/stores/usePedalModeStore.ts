@@ -6,6 +6,7 @@ import { showToast } from '../components/common/ToastContainer';
 
 const STORAGE_KEY = 'antigravity_pedal_mode_state';
 const SUPPRESS_KEY = 'antigravity_pedal_mode_suppress';
+let dismissedUntil = 0;
 
 interface PedalPendingModal {
     model: PedalTargetModel;
@@ -53,6 +54,11 @@ const getStoredState = (): Partial<PedalModeState> => {
 };
 
 function extractCandidate(account: Account, model: PedalTargetModel): PedalCandidate | null {
+    // 排除已被用户主动禁用或处于锁定状态的账号，避免坏号被选为唯一可用账号导致全池瘫痪
+    if (account.proxy_disabled) {
+        return null;
+    }
+
     const tier = getAccountTier(account);
     const summaries = getGroupQuotaSummaries(account.quota?.quota_groups, account.quota?.models, tier);
     const summary = summaries.find(s => s.key === model);
@@ -99,6 +105,11 @@ export const usePedalModeStore = create<PedalModeStore>((set, get) => {
             const state = get();
             if (state.active) {
                 // 如果已激活，退出检查交给外部或定期轮询 checkAndAutoRecover
+                return;
+            }
+
+            // 用户若在过去 2 小时内点击了“暂不启动”，不重复打扰
+            if (Date.now() < dismissedUntil) {
                 return;
             }
 
@@ -192,7 +203,29 @@ export const usePedalModeStore = create<PedalModeStore>((set, get) => {
             }
 
             const targetAccounts = accounts.filter(a => state.targetAccountIds.includes(a.id));
-            if (targetAccounts.length === 0) return;
+            if (targetAccounts.length === 0) {
+                // 异常保底：若所有目标账号已被用户删除或移除，立即退出并恢复挂起的正常账号，防死锁
+                for (const id of state.temporarilyDisabledIds) {
+                    try {
+                        await toggleProxy(id, true);
+                    } catch (e) {
+                        console.error('[PedalMode] Failed to restore account on empty targets:', id, e);
+                    }
+                }
+                const clearedState = {
+                    active: false,
+                    targetModel: null,
+                    targetAccountIds: [],
+                    snapshotDisabledIds: [],
+                    temporarilyDisabledIds: [],
+                };
+                try {
+                    localStorage.removeItem(STORAGE_KEY);
+                } catch (_) {}
+                set(clearedState);
+                showToast('目标待蹬账号已不存在，已自动退出蹬额度模式并恢复所有账号');
+                return;
+            }
 
             // 检查所有待蹬账号是否全部用完 (0%) 或已到达重置时间 (已刷新)
             let allDrained = true;
@@ -275,6 +308,8 @@ export const usePedalModeStore = create<PedalModeStore>((set, get) => {
         },
 
         dismissModal: () => {
+            // 暂不启动时设置 2 小时静默窗口，避免频繁打扰
+            dismissedUntil = Date.now() + 2 * 3600 * 1000;
             set({ pendingModal: null });
         },
 
