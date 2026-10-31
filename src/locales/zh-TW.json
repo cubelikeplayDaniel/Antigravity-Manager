@@ -992,6 +992,20 @@
                 },
                 "max_wait": "最大等待時長 (秒)",
                 "max_wait_tooltip": "僅在“快取優先”模式下生效：如果帳號限流重置時間小於此值，則原地等待而非切換帳號。",
+                "max_spillover_accounts": "分流併發帳號上限",
+                "max_spillover_accounts_tooltip": "當啟動多個子代理或高併發多會話時，最多允許同時呼叫的健康帳號數量。設為 0 表示不限制（全池空閒帳號皆此外溢加速）；設為正整數（如 2）則限制最多同時使用該數量的帳號，超出時在已有帳號間負載均衡，防止子代理佔用過多額外帳號。",
+                "spillover_unlimited": "不限制 (全池可用)",
+                "spillover_count": "{{count}} 個帳號",
+                "affinity_scope": "粘性綁定維度",
+                "affinity_scope_tooltip": "會話級：按 Session ID 綁定帳號（預設模式，自動歸一化多Agent衍生後綴）；憑據級：將來自同一 API Key 的請求強制鎖定在同一帳號（專治多Agent框架頻繁生成隨機UUID導致的快取擊穿）。",
+                "affinity_scopes": {
+                    "session": "會話級 (Session)",
+                    "api_key": "憑據級 (API-Key)"
+                },
+                "affinity_scopes_desc": {
+                    "session": "按 Session ID 綁定帳號，自動歸一化多智能體子任務前綴（如 :step:N）。",
+                    "api_key": "將來自同一 API Key 的所有請求鎖定在同一個主帳號，徹底杜絕 AutoGPT/Cindy 等多Agent框架擊穿 Prompt Cache。"
+                },
                 "clear_bindings": "清除會話繫結",
                 "clear_bindings_tooltip": "立即斷開所有會話與帳號的繫結關係，強制下一次請求重新分配帳號。",
                 "clear_rate_limits": "清除限流記錄",

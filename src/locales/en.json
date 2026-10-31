@@ -1031,6 +1031,16 @@
                 "max_wait_tooltip": "Only used in 'Cache First' mode: wait instead of switching if the rate limit reset time is below this value.",
                 "max_spillover_accounts": "Spillover Account Cap",
                 "max_spillover_accounts_tooltip": "Maximum number of accounts allowed for concurrent traffic spillover when running multiple sub-agents or parallel sessions. Set to 0 for unlimited (all healthy accounts available); set to a positive integer (e.g. 2) to cap active accounts and prevent excessive spillover across accounts.",
+                "affinity_scope": "Affinity Scope",
+                "affinity_scope_tooltip": "Session: Binds by session ID (default, auto-normalizes multi-agent subtasks); API-Key: Locks all requests from the same API Key to a single account (prevents prompt cache misses in multi-agent frameworks).",
+                "affinity_scopes": {
+                    "session": "Session ID",
+                    "api_key": "API-Key"
+                },
+                "affinity_scopes_desc": {
+                    "session": "Binds accounts by session ID with automatic subtask prefix normalization (e.g. :step:N).",
+                    "api_key": "Locks all requests from the same API Key to one upstream account, maximizing cache hits for AutoGPT/Cindy multi-agent fleets."
+                },
                 "spillover_unlimited": "Unlimited (All available)",
                 "spillover_count": "{{count}} accounts",
                 "clear_bindings": "Clear Session Bindings",

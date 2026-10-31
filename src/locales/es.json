@@ -1000,6 +1000,20 @@
                 },
                 "max_wait": "Espera Máxima (seg)",
                 "max_wait_tooltip": "Solo usado en modo 'Caché Primero': esperar en lugar de cambiar si el tiempo de reinicio del límite de tasa está por debajo de este valor.",
+                "max_spillover_accounts": "Límite de Cuentas de Desbordamiento",
+                "max_spillover_accounts_tooltip": "Número máximo de cuentas permitidas para desbordamiento de tráfico concurrente. 0 para ilimitado (todas las cuentas sanas); un entero positivo (ej. 2) para limitar las cuentas activas.",
+                "spillover_unlimited": "Ilimitado (Todas disponibles)",
+                "spillover_count": "{{count}} cuentas",
+                "affinity_scope": "Ámbito de Afinidad",
+                "affinity_scope_tooltip": "Sesión: vincula por ID de sesión (predeterminado, normalización automática de subtareas); Clave API: fija todas las solicitudes de la misma clave en una sola cuenta (evita fallos de caché en multiagentes).",
+                "affinity_scopes": {
+                    "session": "ID de Sesión",
+                    "api_key": "Clave API"
+                },
+                "affinity_scopes_desc": {
+                    "session": "Vincula cuentas por ID de sesión con normalización automática de prefijos de subtareas (:step:N).",
+                    "api_key": "Bloquea todas las solicitudes de la misma clave en una sola cuenta, maximizando aciertos de caché para multiagentes."
+                },
                 "clear_bindings": "Limpiar Vinculaciones de Sesión",
                 "clear_bindings_tooltip": "Reinicio completo de todas las vinculaciones sesión-cuenta, forzando que las cuentas se reasignen en la próxima solicitud.",
                 "clear_rate_limits": "Limpiar Registros de Límites de Tasa",

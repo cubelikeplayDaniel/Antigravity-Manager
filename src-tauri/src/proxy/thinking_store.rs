@@ -1394,15 +1394,35 @@ impl SessionScope {
         let fallback = fallback.into();
         let tenant = tenant_component(headers, tenant_id);
         let winner = stable_session_winner(headers, body, query);
-        let affinity_anchor = if winner.is_some() {
-            ""
-        } else {
-            fallback.as_str()
+
+        // 读取粘性调度配置维度（优先环境变量，其次配置文件，默认 Session 级）
+        let affinity_scope = crate::proxy::get_affinity_scope();
+        let (affinity_id, affinity_key) = match affinity_scope {
+            crate::proxy::sticky_config::AffinityScope::ApiKey => {
+                // 凭据级强粘性：针对多智能体框架频繁派生瞬态 Session UUID 场景，
+                // 同一 API Key / 租户来源的所有流量统一绑定至同一上游主账号，消除 Prompt Cache 击穿
+                let aff_id = format!("key-{}", tenant);
+                let aff_key = format!("{}:{}", tenant, aff_id);
+                (aff_id, aff_key)
+            }
+            crate::proxy::sticky_config::AffinityScope::Session => {
+                // 默认会话级粘性：自动识别多智能体常见的派生子步骤后缀（如 :step:N、:talk:N 等），
+                // 自动归一化到父根会话，实现子 Agent 组内统一路由与缓存命中
+                let normalized_winner = winner.as_deref().map(extract_root_session_id);
+                let affinity_anchor = if normalized_winner.is_some() {
+                    ""
+                } else {
+                    fallback.as_str()
+                };
+                let aff_id = derive_winner_session_id(&tenant, normalized_winner, affinity_anchor);
+                let aff_key = format!("{}:{}", tenant, aff_id);
+                (aff_id, aff_key)
+            }
         };
-        let affinity_id = derive_winner_session_id(&tenant, winner.as_deref(), affinity_anchor);
+
+        // client_id 与 store_key 依然保持未截断的原始完整 winner，用于思维库隔离、诊断与下游响应
         let client_id = derive_winner_session_id(&tenant, winner.as_deref(), &fallback);
         let store_key = format!("{}:{}", tenant, client_id);
-        let affinity_key = format!("{}:{}", tenant, affinity_id);
         Self {
             client_id,
             store_key,
@@ -2610,6 +2630,43 @@ pub fn extract_body_session_id(body: Option<&Value>) -> Option<String> {
         }
     }
     None
+}
+
+/// 提取根会话标识符：自动识别多智能体协同框架（如 Cindy 群聊军团、AutoGPT、LangGraph）
+/// 派生的子任务/步骤后缀，将 `uuid:step:1`、`prefix:talk:2` 等派生 ID 归一化至根 Session ID。
+/// 确保同一业务大任务中的所有子 Agent 调用统一路由至同一上游账号以最大化 Prompt Cache 命中率。
+pub fn extract_root_session_id(raw_sid: &str) -> &str {
+    let s = raw_sid.trim();
+    if s.is_empty() {
+        return s;
+    }
+
+    // 常见多智能体复合派生后缀分隔标记（按匹配优先级降序）
+    const AGENT_DELIMITERS: &[&str] = &[
+        ":step:",
+        ":step-",
+        ":subtask:",
+        ":subtask-",
+        ":agent:",
+        ":talk:",
+        ":round:",
+        ":task:",
+        ":phase:",
+        "--step-",
+        "--subtask-",
+        "::",
+    ];
+
+    for delim in AGENT_DELIMITERS {
+        if let Some((root, _)) = s.split_once(delim) {
+            let trimmed_root = root.trim();
+            if !trimmed_root.is_empty() {
+                return trimmed_root;
+            }
+        }
+    }
+
+    s
 }
 
 /// 只哈希一个稳定会话号。有赢家时账号键省略内容锚点，思维库键保留锚点。
@@ -6395,5 +6452,72 @@ mod signature_placement_tests {
 
         // 测试后重置开关以防干扰其他测试
         crate::proxy::config::set_global_compaction_strip_enabled(false);
+    }
+
+    #[test]
+    fn test_extract_root_session_id_multi_agent_delimiters() {
+        // 普通 session_id 保持不变
+        assert_eq!(extract_root_session_id("sess-1234-abcd"), "sess-1234-abcd");
+        assert_eq!(
+            extract_root_session_id("550e8400-e29b-41d4-a716-446655440000"),
+            "550e8400-e29b-41d4-a716-446655440000"
+        );
+
+        // 识别各类多智能体协同派生标记
+        assert_eq!(
+            extract_root_session_id("cindy_army_main:step:1"),
+            "cindy_army_main"
+        );
+        assert_eq!(
+            extract_root_session_id("cindy_army_main:step:2:talk:3"),
+            "cindy_army_main"
+        );
+        assert_eq!(
+            extract_root_session_id("workflow_7788:subtask:audit"),
+            "workflow_7788"
+        );
+        assert_eq!(
+            extract_root_session_id("task_9900:agent:reviewer"),
+            "task_9900"
+        );
+        assert_eq!(
+            extract_root_session_id("discussion_root:talk:round_1"),
+            "discussion_root"
+        );
+        assert_eq!(extract_root_session_id("chat_abc::phase_2"), "chat_abc");
+        assert_eq!(extract_root_session_id("parent_job--step-4"), "parent_job");
+        assert_eq!(
+            extract_root_session_id("agent_session:round:5"),
+            "agent_session"
+        );
+    }
+
+    #[test]
+    fn test_session_scope_root_normalization_shares_affinity_key_while_keeping_store_key_isolated()
+    {
+        let mut h1 = HeaderMap::new();
+        h1.insert("x-session-id", "parent_flow_123:step:1".parse().unwrap());
+        h1.insert("authorization", "Bearer test_key_secret".parse().unwrap());
+
+        let mut h2 = HeaderMap::new();
+        h2.insert("x-session-id", "parent_flow_123:step:2".parse().unwrap());
+        h2.insert("authorization", "Bearer test_key_secret".parse().unwrap());
+
+        let scope1 = SessionScope::resolve(&h1, None, None, "fallback_1", None);
+        let scope2 = SessionScope::resolve(&h2, None, None, "fallback_2", None);
+
+        // 核心验证：多智能体派生子任务的选号 affinity_key 完全相同（锁定同一上游账号以保 Prompt Cache）
+        assert_eq!(
+            scope1.affinity_key, scope2.affinity_key,
+            "Derived step sessions must share the same affinity_key to preserve prompt caching"
+        );
+        assert_eq!(scope1.affinity_id, scope2.affinity_id);
+
+        // 同时：各子任务的 client_id / store_key 必须保持各自独立，防止思维库与工具调用历史发生串号踩踏
+        assert_ne!(
+            scope1.store_key, scope2.store_key,
+            "Store keys must remain isolated for each sub-session"
+        );
+        assert_ne!(scope1.client_id, scope2.client_id);
     }
 }

@@ -995,6 +995,20 @@
                 },
                 "max_wait": "Maks Bekleme (sn)",
                 "max_wait_tooltip": "Yalnızca 'Önbellek Öncelikli' modunda kullanılır: oran limiti sıfırlama zamanı bu değerin altındaysa geçiş yapmak yerine bekle.",
+                "max_spillover_accounts": "Taşma Hesap Sınırı",
+                "max_spillover_accounts_tooltip": "Eşzamanlı trafik taşması için izin verilen maksimum hesap sayısı. 0 sınırsız demektir; pozitif bir tamsayı (örn. 2) aktif hesapları sınırlar.",
+                "spillover_unlimited": "Sınırsız (Tümü kullanılabilir)",
+                "spillover_count": "{{count}} hesap",
+                "affinity_scope": "Bağlılık Kapsamı",
+                "affinity_scope_tooltip": "Oturum: Oturum kimliğine göre bağlar (varsayılan, çoklu ajan alt görevlerini otomatik normalleştirir); API Anahtarı: Aynı API anahtarından gelen tüm istekleri tek bir hesaba kilitler.",
+                "affinity_scopes": {
+                    "session": "Oturum Kimliği",
+                    "api_key": "API Anahtarı"
+                },
+                "affinity_scopes_desc": {
+                    "session": "Oturum kimliğine göre bağlar ve çoklu ajan türetilmiş öneklerini (:step:N) otomatik olarak normalleştirir.",
+                    "api_key": "Aynı API anahtarından gelen tüm istekleri tek bir hesaba kilitler, önbellek isabetini maksimize eder."
+                },
                 "clear_bindings": "Oturum Bağlantılarını Temizle",
                 "clear_bindings_tooltip": "Tüm oturum ve hesap bağlantılarını hemen kesin, bir sonraki istekte hesapları yeniden atanmaya zorlayın.",
                 "fixed_account": "Fixed Account Mode",

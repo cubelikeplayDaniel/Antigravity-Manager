@@ -1013,6 +1013,20 @@
                 },
                 "max_wait": "Tempo Máximo de Espera (seg)",
                 "max_wait_tooltip": "Usado apenas no modo 'Cache Primeiro': aguardar em vez de alternar se o tempo de reset do limite de taxa estiver abaixo deste valor.",
+                "max_spillover_accounts": "Limite de Contas de Transbordamento",
+                "max_spillover_accounts_tooltip": "Número máximo de contas permitidas para transbordamento de tráfego simultâneo. 0 para ilimitado (todas disponíveis); um inteiro positivo (ex: 2) para limitar contas ativas.",
+                "spillover_unlimited": "Ilimitado (Todas disponíveis)",
+                "spillover_count": "{{count}} contas",
+                "affinity_scope": "Escopo de Afinidade",
+                "affinity_scope_tooltip": "Sessão: vincula por ID de sessão (padrão, normalização de subtarefas); Chave API: bloqueia requisições da mesma chave na mesma conta (evita perdas de cache em multiagentes).",
+                "affinity_scopes": {
+                    "session": "ID da Sessão",
+                    "api_key": "Chave API"
+                },
+                "affinity_scopes_desc": {
+                    "session": "Vincula contas por ID de sessão com normalização automática de subtarefas (:step:N).",
+                    "api_key": "Fixa todas as requisições da mesma chave API em uma única conta, maximizando hits de cache para frotas multiagentes."
+                },
                 "clear_bindings": "Limpar Vinculações de Sessão",
                 "clear_bindings_tooltip": "Redefinir todas as vinculações sessão-conta, forçando contas a serem reatribuídas na próxima solicitação.",
                 "clear_rate_limits": "Limpar Bloqueios de Taxa (429)",

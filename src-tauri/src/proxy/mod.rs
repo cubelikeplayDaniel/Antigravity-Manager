@@ -55,6 +55,7 @@ pub use qos_guardian::{AccountQoSState, QoSGuardian};
 pub use security::ProxySecurityConfig;
 pub use server::AxumServer;
 pub use signature_cache::SignatureCache;
+pub use sticky_config::{get_affinity_scope, AffinityScope, SchedulingMode, StickySessionConfig};
 pub use token_manager::TokenManager;
 
 #[cfg(test)]

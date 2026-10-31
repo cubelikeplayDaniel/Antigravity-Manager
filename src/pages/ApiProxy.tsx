@@ -2524,6 +2524,44 @@ print(response.choices[0].message.content)`;
                                                 </div>
                                             </div>
 
+                                            <div className="bg-gray-50/70 dark:bg-base-200 rounded-xl p-4 border border-gray-100 dark:border-base-300">
+                                                <div className="flex items-center justify-between mb-2">
+                                                    <label className="text-xs font-medium text-gray-700 dark:text-gray-300 inline-flex items-center gap-1">
+                                                        {t('proxy.config.scheduling.affinity_scope', { defaultValue: 'Affinity Scope' })}
+                                                        <HelpTooltip text={t('proxy.config.scheduling.affinity_scope_tooltip', { defaultValue: 'Session: Binds by session ID (default, auto-normalizes multi-agent subtasks); API-Key: Binds all requests from the same API-Key to a single account (prevents prompt cache misses in multi-agent frameworks).' })} />
+                                                    </label>
+                                                    <div className="flex bg-slate-200/70 dark:bg-base-300 p-0.5 rounded-lg border border-slate-300/50 dark:border-white/5">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => updateSchedulingConfig({ affinity_scope: 'session' })}
+                                                            className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-all ${
+                                                                (appConfig.proxy.scheduling?.affinity_scope || 'session') === 'session'
+                                                                    ? 'bg-white dark:bg-base-100 text-indigo-600 dark:text-indigo-400 shadow-sm'
+                                                                    : 'text-gray-500 hover:text-gray-800 dark:hover:text-gray-200'
+                                                            }`}
+                                                        >
+                                                            {t('proxy.config.scheduling.affinity_scopes.session', { defaultValue: 'Session ID' })}
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => updateSchedulingConfig({ affinity_scope: 'api_key' })}
+                                                            className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-all ${
+                                                                appConfig.proxy.scheduling?.affinity_scope === 'api_key'
+                                                                    ? 'bg-white dark:bg-base-100 text-indigo-600 dark:text-indigo-400 shadow-sm'
+                                                                    : 'text-gray-500 hover:text-gray-800 dark:hover:text-gray-200'
+                                                            }`}
+                                                        >
+                                                            {t('proxy.config.scheduling.affinity_scopes.api_key', { defaultValue: 'API-Key' })}
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                                <p className="text-[10px] text-gray-500 leading-relaxed">
+                                                    {(appConfig.proxy.scheduling?.affinity_scope || 'session') === 'api_key'
+                                                        ? t('proxy.config.scheduling.affinity_scopes_desc.api_key', { defaultValue: 'Locks all requests from the same API-Key to one upstream account, maximizing cache hits for AutoGPT/Cindy multi-agent fleets.' })
+                                                        : t('proxy.config.scheduling.affinity_scopes_desc.session', { defaultValue: 'Binds accounts by session ID with automatic subtask prefix normalization (e.g. :step:N).' })}
+                                                </p>
+                                            </div>
+
                                             <div className="p-3 bg-amber-50 dark:bg-amber-900/10 border border-amber-100 dark:border-amber-900/20 rounded-xl">
                                                 <p className="text-[10px] text-amber-700 dark:text-amber-500 leading-relaxed">
                                                     <strong>{t('common.info')}:</strong> {t('proxy.config.scheduling.subtitle')}

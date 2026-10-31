@@ -146,11 +146,13 @@ export interface DebugLoggingConfig {
 }
 
 export type SchedulingMode = 'CacheFirst' | 'Balance' | 'PerformanceFirst';
+export type AffinityScope = 'session' | 'api_key';
 
 export interface StickySessionConfig {
     mode: SchedulingMode;
     max_wait_seconds: number;
     max_spillover_accounts?: number;
+    affinity_scope?: AffinityScope;
 }
 
 export interface ScheduledWarmupConfig {

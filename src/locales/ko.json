@@ -1000,6 +1000,20 @@
                 },
                 "max_wait": "최대 대기 (초)",
                 "max_wait_tooltip": "'캐시 우선' 모드에서만 사용: 속도 제한 재설정 시간이 이 값보다 작으면 전환하는 대신 대기합니다.",
+                "max_spillover_accounts": "분류 동시 계정 상한",
+                "max_spillover_accounts_tooltip": "여러 서브 에이전트 또는 병렬 세션을 실행할 때 동시에 호출할 수 있는 최대 정상 계정 수입니다. 0으로 설정하면 무제한(사용 가능한 모든 계정 사용); 양의 정수(예: 2)로 설정하면 활성 계정 수를 제한하여 과도한 분산을 방지합니다.",
+                "spillover_unlimited": "무제한 (모두 사용 가능)",
+                "spillover_count": "{{count}}개 계정",
+                "affinity_scope": "어피니티 범위",
+                "affinity_scope_tooltip": "세션: 세션 ID로 바인딩(기본값, 멀티 에이전트 서브태스크 자동 정규화); API 키: 동일한 API 키의 모든 요청을 단일 계정에 고정(멀티 에이전트 프롬프트 캐시 미스 방지).",
+                "affinity_scopes": {
+                    "session": "세션 ID",
+                    "api_key": "API 키"
+                },
+                "affinity_scopes_desc": {
+                    "session": "세션 ID별로 계정을 바인딩하고 멀티 에이전트 파생 접두사(:step:N 등)를 자동으로 정규화합니다.",
+                    "api_key": "동일한 API 키의 모든 요청을 하나의 계정에 고정하여 AutoGPT/Cindy 등의 캐시 적중을 극대화합니다."
+                },
                 "clear_bindings": "세션 바인딩 지우기",
                 "clear_bindings_tooltip": "모든 세션-계정 바인딩을 하드 리셋하여 다음 요청 시 계정이 다시 할당되도록 합니다.",
                 "clear_rate_limits": "속도 제한 기록 지우기",

@@ -985,6 +985,20 @@
                 },
                 "max_wait": "Tunggu Maks (saat)",
                 "max_wait_tooltip": "Hanya digunakan dalam mod 'Cache First': tunggu bukannya menukar jika masa reset had kadar adalah di bawah nilai ini.",
+                "max_spillover_accounts": "Had Akaun Limpahan",
+                "max_spillover_accounts_tooltip": "Bilangan maksimum akaun yang dibenarkan untuk limpahan trafik serentak. Tetapkan ke 0 untuk tanpa had; tetapkan integer positif (cth. 2) untuk mengehadkan akaun aktif.",
+                "spillover_unlimited": "Tanpa Had (Semua tersedia)",
+                "spillover_count": "{{count}} akaun",
+                "affinity_scope": "Skop Afiniti",
+                "affinity_scope_tooltip": "Sesi: Ikat mengikut ID sesi (lalai, normalisasi subtugasan automatik); Kunci API: Kunci semua permintaan dari kunci API yang sama ke akaun tunggal.",
+                "affinity_scopes": {
+                    "session": "ID Sesi",
+                    "api_key": "Kunci API"
+                },
+                "affinity_scopes_desc": {
+                    "session": "Mengikat akaun mengikut ID sesi dengan normalisasi automatik awalan subtugasan (:step:N).",
+                    "api_key": "Mengunci semua permintaan daripada kunci API yang sama kepada satu akaun untuk memaksimumkan hit Prompt Cache."
+                },
                 "clear_bindings": "Kosongkan Pengikatan Sesi",
                 "clear_bindings_tooltip": "Reset keras semua pengikatan sesi-akaun, memaksa akaun ditugaskan semula pada permintaan seterusnya.",
                 "clear_rate_limits": "Kosongkan Rekod Had Kadar",

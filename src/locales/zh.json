@@ -1022,6 +1022,16 @@
                 "max_wait_tooltip": "仅在“缓存优先”模式下生效：如果账号限流重置时间小于此值，则原地等待而非切换账号。",
                 "max_spillover_accounts": "分流并发账号上限",
                 "max_spillover_accounts_tooltip": "当启动多个子代理或高并发多会话时，最多允许同时调用的健康账号数量。设为 0 表示不限制（全池空闲账号皆可外溢加速）；设为正整数（如 2）则限制最多同时使用该数量的账号，超出时在已有账号间负载均衡，防止子代理占用过多额外账号。",
+                "affinity_scope": "粘性绑定维度",
+                "affinity_scope_tooltip": "会话级：按 Session ID 绑定账号（默认模式，自动归一化多Agent派生后缀）；凭据级：将来自同一 API Key 的请求强制锁定在同一账号（专治多Agent框架频繁生成随机UUID导致的缓存击穿）。",
+                "affinity_scopes": {
+                    "session": "会话级 (Session)",
+                    "api_key": "凭据级 (API-Key)"
+                },
+                "affinity_scopes_desc": {
+                    "session": "按 Session ID 绑定账号，自动归一化多智能体子任务前缀（如 :step:N）。",
+                    "api_key": "将来自同一 API Key 的所有请求锁定在同一个主账号，彻底杜绝 AutoGPT/Cindy 等多Agent框架打穿 Prompt Cache。"
+                },
                 "spillover_unlimited": "不限制 (全池可用)",
                 "spillover_count": "{{count}} 个账号",
                 "clear_bindings": "清除会话绑定",
