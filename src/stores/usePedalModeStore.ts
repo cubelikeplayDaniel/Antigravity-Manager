@@ -235,8 +235,16 @@ export const usePedalModeStore = create<PedalModeStore>((set, get) => {
                 const tier = getAccountTier(acc);
                 const summaries = getGroupQuotaSummaries(acc.quota?.quota_groups, acc.quota?.models, tier);
                 const s = summaries.find(sm => sm.key === state.targetModel);
-                const pct = s?.weekly?.percentage ?? 0;
-                const resetTimeStr = s?.weekly?.resetTime;
+
+                // 配额数据未就绪或临时加载失败时，进行保守保护，防止误判为 0% 提前退出
+                if (!s || !s.weekly || s.weekly.percentage === undefined) {
+                    allDrained = false;
+                    allReset = false;
+                    continue;
+                }
+
+                const pct = s.weekly.percentage;
+                const resetTimeStr = s.weekly.resetTime;
                 const resetTimestamp = resetTimeStr ? Date.parse(resetTimeStr) : NaN;
                 const diffHours = !isNaN(resetTimestamp) ? (resetTimestamp - Date.now()) / (3600 * 1000) : 999;
 
@@ -245,8 +253,11 @@ export const usePedalModeStore = create<PedalModeStore>((set, get) => {
                     allDrained = false;
                 }
 
-                // 若未到达新周期（依然处于临期窗口内且配额未恢复），则未全部重置
-                if (diffHours <= 24 && pct < 90) {
+                // 临期等待判定：仅当处于倒计时窗口内 (0 < diffHours <= 24) 且配额尚未恢复 (< 90%) 时，
+                // 才说明该账号既未到达重置时间、也未刷新新周期。
+                // 若 diffHours <= 0 (到达官方重置时间) 或 pct >= 90 (配额已满血) 或 diffHours > 24 (时间戳已进入下周)，
+                // 均表明该账号已到达重置时间或已成功重置。
+                if (diffHours > 0 && diffHours <= 24 && pct < 90) {
                     allReset = false;
                 }
             }

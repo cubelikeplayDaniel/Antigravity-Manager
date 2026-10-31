@@ -210,6 +210,62 @@ async function runTests() {
         assert(toggled.some(t => t.id === 'acc-1' && t.enable === true), 'acc-1 should be restored');
     });
 
+    // Test 8: Official reset time reached (diffHours <= 0) triggers auto-recovery even if quota > 0%
+    await test('8. Automatically exits when official reset time is reached (diffHours <= 0) even with remaining quota', async () => {
+        const pastReset = new Date(now - 600 * 1000).toISOString(); // 10 minutes ago
+        const expiredAcc3 = makeAccount('acc-3', 'Account 3 Expired', 20, pastReset, 80, farReset);
+        const expiredAcc4 = makeAccount('acc-4', 'Account 4 Expired', 15, pastReset, 80, farReset);
+
+        usePedalModeStore.setState({
+            active: true,
+            targetModel: 'gemini',
+            targetAccountIds: ['acc-3', 'acc-4'],
+            snapshotDisabledIds: ['acc-2'],
+            temporarilyDisabledIds: ['acc-1'],
+        });
+
+        const toggled: Array<{ id: string; enable: boolean }> = [];
+        const mockToggle = async (id: string, enable: boolean) => {
+            toggled.push({ id, enable });
+        };
+
+        await store.checkAndAutoRecover([acc1, acc2, expiredAcc3, expiredAcc4], mockToggle);
+
+        const state = usePedalModeStore.getState();
+        assert(state.active === false, 'Should automatically exit pedal mode because reset time is reached');
+        assert(toggled.some(t => t.id === 'acc-1' && t.enable === true), 'acc-1 should be restored');
+    });
+
+    // Test 9: Quota data loading / undefined protection prevents premature exit
+    await test('9. Temporary missing quota data does not trigger premature 0% drain exit', async () => {
+        const unreadyAcc3 = {
+            id: 'acc-3',
+            name: 'Account 3 (Loading)',
+            email: 'acc-3@example.com',
+            proxy_disabled: false,
+            quota: undefined,
+        } as any;
+
+        usePedalModeStore.setState({
+            active: true,
+            targetModel: 'gemini',
+            targetAccountIds: ['acc-3'],
+            snapshotDisabledIds: ['acc-2'],
+            temporarilyDisabledIds: ['acc-1'],
+        });
+
+        const toggled: Array<{ id: string; enable: boolean }> = [];
+        const mockToggle = async (id: string, enable: boolean) => {
+            toggled.push({ id, enable });
+        };
+
+        await store.checkAndAutoRecover([acc1, unreadyAcc3], mockToggle);
+
+        const state = usePedalModeStore.getState();
+        assert(state.active === true, 'Pedal mode must stay active while quota data is loading/unavailable');
+        assertEqual(toggled.length, 0, 'No account should be toggled');
+    });
+
     console.log(`\nPedal Mode Tests Summary: ${passed} passed, ${failed} failed.`);
     if (failed > 0) {
         throw new Error(`Pedal Mode tests failed: ${failed}`);
