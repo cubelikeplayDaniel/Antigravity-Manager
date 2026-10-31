@@ -93,6 +93,7 @@ pub struct OpenAIChatStreamHandler {
     pub has_thinking: bool,
     pub is_thinking_active: bool,
     pub has_emitted_finish_reason: bool,
+    pub has_emitted_done: bool,
 }
 
 impl ProtocolStreamHandler for OpenAIChatStreamHandler {
@@ -399,6 +400,10 @@ impl ProtocolStreamHandler for OpenAIChatStreamHandler {
         self.is_thinking_active
     }
 
+    fn is_terminal(&self) -> bool {
+        self.has_emitted_done
+    }
+
     fn emit_finalize(&mut self) -> Vec<Bytes> {
         let mut chunks = Vec::new();
 
@@ -453,50 +458,51 @@ impl ProtocolStreamHandler for OpenAIChatStreamHandler {
                 )));
             }
         }
+        self.has_emitted_done = true;
         chunks.push(Bytes::from("data: [DONE]\n\n"));
         chunks
     }
 
-    fn emit_abnormal_finalize(&mut self, error_report: &StreamErrorReport) -> Vec<Bytes> {
+    fn emit_abnormal_finalize(&mut self, _error_report: &StreamErrorReport) -> Vec<Bytes> {
         let mut chunks = Vec::new();
 
-        // 未产生内容中断防护：若未产生任何正文/工具调用，绝不可伪造收尾
-        if !self.has_content && self.emitted_tool_calls.is_empty() {
+        // 终态与未产生内容防护：若已经发射 [DONE]，或从未产生任何正文/工具调用，绝不可伪造收尾
+        if self.has_emitted_done || (!self.has_content && self.emitted_tool_calls.is_empty()) {
             return chunks;
         }
 
         self.is_thinking_active = false;
 
-        // 1. 代码块修复与提示语
-        let visible = self.thinking_acc.visible();
-        let fence_repair =
-            crate::proxy::mappers::error_classifier::repair_unclosed_code_fence(visible);
-        let banner = error_report.abnormal_notice();
-        let mut notice_text = fence_repair.unwrap_or_default();
-        notice_text.push_str(&banner);
+        // 若流尚未发射 finish_reason，按异常收尾契约下发带有 "tool_calls" 或 "length" 的终态帧
+        if !self.has_emitted_finish_reason {
+            self.has_emitted_finish_reason = true;
+            let finish_reason = if !self.emitted_tool_calls.is_empty() {
+                "tool_calls"
+            } else {
+                "length"
+            };
 
-        // 2. 发送告警正文 chunk 并将 finish_reason 置为 "length"
-        self.has_emitted_finish_reason = true;
-        let mut finish_chunk = json!({
-            "id": &self.stream_id,
-            "object": "chat.completion.chunk",
-            "created": self.created_ts,
-            "model": &self.model,
-            "choices": [{
-                "index": 0,
-                "delta": { "content": notice_text },
-                "finish_reason": "length"
-            }]
-        });
-        if !self.include_usage {
-            if let Some(usage) = self.final_usage.take() {
-                finish_chunk["usage"] = serde_json::to_value(usage).unwrap_or_default();
+            let mut finish_chunk = json!({
+                "id": &self.stream_id,
+                "object": "chat.completion.chunk",
+                "created": self.created_ts,
+                "model": &self.model,
+                "choices": [{
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": finish_reason
+                }]
+            });
+            if !self.include_usage {
+                if let Some(usage) = self.final_usage.take() {
+                    finish_chunk["usage"] = serde_json::to_value(usage).unwrap_or_default();
+                }
             }
+            chunks.push(Bytes::from(format!(
+                "data: {}\n\n",
+                serde_json::to_string(&finish_chunk).unwrap_or_default()
+            )));
         }
-        chunks.push(Bytes::from(format!(
-            "data: {}\n\n",
-            serde_json::to_string(&finish_chunk).unwrap_or_default()
-        )));
 
         if self.include_usage {
             if let Some(usage) = self.final_usage.take() {
@@ -514,6 +520,7 @@ impl ProtocolStreamHandler for OpenAIChatStreamHandler {
                 )));
             }
         }
+        self.has_emitted_done = true;
         chunks.push(Bytes::from("data: [DONE]\n\n"));
         chunks
     }
@@ -581,6 +588,7 @@ where
         has_thinking: false,
         is_thinking_active: false,
         has_emitted_finish_reason: false,
+        has_emitted_done: false,
     };
 
     let config =
@@ -2504,7 +2512,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_openai_stream_abnormal_interruption_repairs_fence_and_injects_notice() {
+    async fn test_openai_stream_abnormal_interruption_preserves_content_without_tampering() {
         let chunk1_json = json!({
             "candidates": [{
                 "content": {
@@ -2580,9 +2588,129 @@ mod tests {
             })
             .collect();
 
-        assert!(all_text.contains("```python\nprint(123)"));
-        assert!(all_text.contains("\n```\n"));
-        assert!(all_text.contains("网关提示 / Gateway Notice"));
-        assert!(all_text.contains("网络传输中断"));
+        assert_eq!(all_text, "Here is code:\n```python\nprint(123)");
+        // 绝不注入虚假代码围栏与横幅
+        assert!(!all_text.contains("网关提示"));
+        assert!(!all_text.contains("Gateway Notice"));
+    }
+
+    #[tokio::test]
+    async fn test_openai_stream_abnormal_interruption_preserves_tool_calls() {
+        let chunk1_json = json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{
+                        "functionCall": {
+                            "name": "run_bash",
+                            "args": { "command": "cargo check" }
+                        }
+                    }]
+                }
+            }]
+        });
+
+        let items: Vec<Result<Bytes, String>> = vec![
+            Ok(Bytes::from(format!("data: {}\n\n", chunk1_json))),
+            Err("error reading a body: connection reset by peer".to_string()),
+        ];
+
+        let gemini_stream = Box::pin(stream::iter(items));
+
+        let mut openai_stream = create_openai_sse_stream(
+            gemini_stream,
+            "gemini-3.8-flash-high".to_string(),
+            "session-abnormal-tools".to_string(),
+            0,
+            None,
+            false,
+        );
+
+        let mut finish_reasons = Vec::new();
+        while let Some(result) = openai_stream.next().await {
+            if let Ok(bytes) = result {
+                let s = String::from_utf8_lossy(&bytes).to_string();
+                for line in s.lines() {
+                    if line.starts_with("data: ") && !line.contains("[DONE]") {
+                        let json_str = line.trim_start_matches("data: ").trim();
+                        if let Ok(json) = serde_json::from_str::<Value>(json_str) {
+                            if let Some(choices) = json.get("choices").and_then(|c| c.as_array()) {
+                                for choice in choices {
+                                    if let Some(fr) =
+                                        choice.get("finish_reason").and_then(|f| f.as_str())
+                                    {
+                                        finish_reasons.push(fr.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 工具调用断流时必须保证终结原因为 "tool_calls"，绝不能降级为 "length"
+        assert_eq!(
+            finish_reasons,
+            vec!["tool_calls".to_string()],
+            "Tool calls must preserve finish_reason: 'tool_calls'"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_openai_stream_completed_stream_does_not_double_finalize() {
+        let chunk1_json = json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{ "text": "All done." }]
+                },
+                "finishReason": "STOP"
+            }]
+        });
+
+        let items: Vec<Result<Bytes, String>> = vec![
+            Ok(Bytes::from(format!("data: {}\n\n", chunk1_json))),
+            Err("connection reset after stop".to_string()),
+        ];
+
+        let gemini_stream = Box::pin(stream::iter(items));
+
+        let mut openai_stream = create_openai_sse_stream(
+            gemini_stream,
+            "gemini-3.8-flash-high".to_string(),
+            "session-already-done".to_string(),
+            0,
+            None,
+            false,
+        );
+
+        let mut finish_reasons = Vec::new();
+        while let Some(result) = openai_stream.next().await {
+            if let Ok(bytes) = result {
+                let s = String::from_utf8_lossy(&bytes).to_string();
+                for line in s.lines() {
+                    if line.starts_with("data: ") && !line.contains("[DONE]") {
+                        let json_str = line.trim_start_matches("data: ").trim();
+                        if let Ok(json) = serde_json::from_str::<Value>(json_str) {
+                            if let Some(choices) = json.get("choices").and_then(|c| c.as_array()) {
+                                for choice in choices {
+                                    if let Some(fr) =
+                                        choice.get("finish_reason").and_then(|f| f.as_str())
+                                    {
+                                        finish_reasons.push(fr.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 已正常下发 stop 的流，绝不可重复产生第二个 finish_reason (如 length)
+        assert_eq!(
+            finish_reasons,
+            vec!["stop".to_string()],
+            "Completed stream must not emit duplicate finish_reason"
+        );
     }
 }

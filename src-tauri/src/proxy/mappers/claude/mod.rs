@@ -364,47 +364,25 @@ pub fn emit_force_stop(state: &mut StreamingState) -> Vec<Bytes> {
     vec![]
 }
 
-/// 发送异常中断强制结束事件：代码块自动闭合修复 + 双语告警提示 Banner + stop_reason: max_tokens
+/// 发送异常中断强制结束事件：纯净收尾，绝不篡改模型正文；保护工具调用契约
 pub fn emit_abnormal_force_stop(
     state: &mut StreamingState,
-    error_report: &StreamErrorReport,
+    _error_report: &StreamErrorReport,
 ) -> Vec<Bytes> {
     if state.message_stop_sent {
         return vec![];
     }
 
     let mut chunks = Vec::new();
-    let visible = state.thinking_acc.visible();
-    let fence_repair = crate::proxy::mappers::error_classifier::repair_unclosed_code_fence(visible);
-    let banner = error_report.abnormal_notice();
-    let mut notice_text = fence_repair.unwrap_or_default();
-    notice_text.push_str(&banner);
 
-    match state.current_block_type() {
-        BlockType::Text => {
-            chunks.push(state.emit_delta("text_delta", serde_json::json!({ "text": notice_text })));
-            chunks.extend(state.end_block());
-        }
-        BlockType::None => {
-            chunks.extend(state.start_block(
-                BlockType::Text,
-                serde_json::json!({ "type": "text", "text": "" }),
-            ));
-            chunks.push(state.emit_delta("text_delta", serde_json::json!({ "text": notice_text })));
-            chunks.extend(state.end_block());
-        }
-        _ => {
-            chunks.extend(state.end_block());
-            chunks.extend(state.start_block(
-                BlockType::Text,
-                serde_json::json!({ "type": "text", "text": "" }),
-            ));
-            chunks.push(state.emit_delta("text_delta", serde_json::json!({ "text": notice_text })));
-            chunks.extend(state.end_block());
-        }
+    // 若当前仍有未闭合的 content_block，下发 content_block_stop 优雅闭合
+    if state.current_block_type() != BlockType::None {
+        chunks.extend(state.end_block());
     }
 
     let usage = state.last_usage.clone();
+    // emit_finish 内部按优先级判定 stop_reason：若 self.used_tool == true，严格保持 "tool_use"；
+    // 仅当纯文本生成断流时，才标记为截断语义 "max_tokens"
     chunks.extend(state.emit_finish(Some("MAX_TOKENS"), usage.as_ref()));
     if !state.message_stop_sent {
         chunks.push(Bytes::from(
@@ -695,14 +673,14 @@ mod tests {
             "Output must contain text emitted before error"
         );
 
-        // 2. 检查是否注入醒目的双语网关异常告警 Banner
+        // 2. 契约守卫：绝不篡改模型正文，严禁注入虚假网关告警或破坏结构化数据
         assert!(
-            output.contains("网关提示 / Gateway Notice"),
-            "Must inject bilingual gateway notice on abnormal interruption"
+            !output.contains("网关提示"),
+            "Must NOT inject gateway notice into output text"
         );
         assert!(
-            output.contains("可回复“继续”完成后续回答"),
-            "Must inform user how to continue"
+            !output.contains("Gateway Notice"),
+            "Must NOT inject bilingual gateway notice"
         );
 
         // 3. [黄金三元组契约] 必须优雅闭合 content_block 并下发 message_delta(max_tokens) + message_stop，
@@ -736,18 +714,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_claude_sse_stream_mid_stream_interruption_repairs_code_fence_and_injects_notice(
-    ) {
+    async fn test_create_claude_sse_stream_tool_call_interruption_preserves_tool_use_stop_reason() {
         use futures::StreamExt;
 
+        // 模拟一个发送了工具调用后发生网络中断的流
         let mock_stream = async_stream::stream! {
-            yield Ok::<_, String>(bytes::Bytes::from("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Here is a script:\\n```bash\\npython3 main.py --run\"}]}}]}\n\n"));
+            yield Ok::<_, String>(bytes::Bytes::from("data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"bash\",\"args\":{\"command\":\"ls\"}}}]}}]}\n\n"));
             yield Err("error reading a body from connection: connection reset by peer".to_string());
         };
 
         let mut claude_stream = create_claude_sse_stream(
             Box::pin(mock_stream),
-            "trace_code_fence_repair_test".to_string(),
+            "trace_tool_interruption_test".to_string(),
             "test@example.com".to_string(),
             None,
             false,
@@ -755,7 +733,7 @@ mod tests {
             None,
             1,
             None,
-            Vec::new(),
+            vec!["bash".to_string()],
         );
 
         let mut all_chunks = Vec::new();
@@ -766,11 +744,17 @@ mod tests {
         }
         let output = all_chunks.join("");
 
-        // 必须自动闭合代码块并附加网关告警 Banner
-        assert!(output.contains("```bash\\npython3 main.py --run"));
-        assert!(output.contains("\\n```\\n"));
-        assert!(output.contains("网关提示 / Gateway Notice"));
-        assert!(output.contains(r#""stop_reason":"max_tokens""#));
+        // 核心契约保护：已有工具调用时，必须严格保持 stop_reason: tool_use，绝不可覆盖为 max_tokens
+        assert!(output.contains(r#""name":"bash""#));
+        assert!(
+            output.contains(r#""stop_reason":"tool_use""#),
+            "Tool call interruption must strictly preserve stop_reason: tool_use, got: {}",
+            output
+        );
+        assert!(
+            !output.contains(r#""stop_reason":"max_tokens""#),
+            "Tool call interruption must NOT be overwritten by max_tokens"
+        );
         assert!(output.contains("event: message_stop"));
     }
 
