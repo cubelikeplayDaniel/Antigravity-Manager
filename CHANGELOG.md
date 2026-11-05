@@ -3,6 +3,38 @@
 > 完整版本历史记录。返回项目主页请查看 [README_ZH.md](README_ZH.md) | [English Changelog](CHANGELOG_EN.md)。
 
 *   **版本演进**:
+    *   **v5.0.3-beta.5 (2026-11-06)**:
+        -   **[解耦客观物理配额耗尽与自适应熔断，增加单请求重试账号排除] (PR #3845, Thanks to @cubelikeplayDaniel)**:
+            -   **物理事实优先于自适应策略**: 将「上游告知的配额耗尽」与「自适应熔断退避开关」彻底解耦。此前熔断关闭时，`if !config.enabled { return; }` 位于配额判据之前，导致 Google 明确返回 `Individual quota reached` 时信号被丢弃——账号配额不会置 0% 也不会锁定。现确立不变式：账号已被上游告知配额耗尽是客观物理事实，绝不受熔断开关影响。(PR #3845, Thanks to @cubelikeplayDaniel)
+            -   **重试循环引入账号排除机制**: 修复多轮重试锤击同一耗尽账号的问题。此前 `get_token` 传入空的 `excluded_accounts`，P2C 可能因历史配额权重再次选中刚 429 的账号。现各协议重试循环维护 `attempted_accounts` 并传入 `get_token_filtered`，全池遍历后快速失败。(PR #3845, Thanks to @cubelikeplayDaniel)
+            -   **熔断关闭时不再旁路实时锁定**: 新增 `is_quota_exhausted_or_explicit_limited`，即使熔断关闭也能正确拦截处于 `QuotaExhausted` 状态的账号。
+            -   **前端熔断默认值修正**: `circuit_breaker` 初始默认改为 `enabled: true`，避免用户在设置页点击保存时意外关闭熔断器。(PR #3845, Thanks to @cubelikeplayDaniel)
+        -   **[修复 beta.4 发布流水线失败] (Ref #3845)**:
+            -   **问题背景**: beta.4 的 Release 流水线在 `publish-release` 步骤遭遇 GitHub API 瞬时 500 错误（其余 10 个构建作业均成功），导致 Release 对象未创建、`updater.json` 缺失，用户无法感知该版本。
+            -   **修复方式**: 删除悬空的 `v5.0.3-beta.4` tag，直接发布 beta.5，将 PR #3845 的修复与 beta.3 以来的全部改动一并交付。
+
+    *   **v5.0.3-beta.4 (2026-11-05)**:
+        -   **[重新发布：修复 beta.3 自动更新失效] (Ref #3840)**:
+            -   **问题背景**: beta.3 发布后因补充 `cargo fmt` 格式修复而重指 tag，导致 Release 流水线对同一 tag 二次构建并覆盖产物，签名随之变化。已安装 beta.3 的客户端会因签名不匹配而无法原地更新，降级为跳转下载。
+            -   **修复方式**: 发布 beta.4 新版本号，使存量用户走正常版本升级路径，自动更新恢复正常。功能上 beta.4 与 beta.3 完全一致，仅含 rustfmt 格式修正。
+            -   **配套保证**: 本次已确认 CI（含 `cargo fmt --check`）全部通过后再打 tag，避免重复覆盖。
+
+    *   **v5.0.3-beta.3 (2026-11-05)**:
+        -   **[根治 503 归因污染与配额假死：重构配额大桶调度、自定义映射优先级与超时契约] (Fixes #3838, #3841, Ref #3821, #3827, #3840)**:
+            -   **根除 503 归因污染（占全量 5xx 的 92.6%）**: 统一收敛网关内部限流判据至 `policy::is_internal_gateway_exhaustion` 单一权威源，补全此前漏判的 `All accounts rate-limited`（旧列表只写 `all accounts limited`，导致本地账号池限流被误报为上游 503）；同步收敛 `rate_limit.rs` 与 `token_manager.rs` 中另两处独立漂移的判据实现。(Fixes #3838)
+            -   **新增 403 封禁专用归因**: 为 `TOS_VIOLATION` / `PERMISSION_DENIED` 新增 `account_forbidden` 错误码与 12 语言文案，账号封禁不再被 403→503 映射后与容量枯竭混淆。(Fixes #3838)
+            -   **配额诊断升级为采信上游权威信号**: 新增 L1 上游 `quotaResetTimeStamp` 优先锁定，四类配额桶（Argon 独立桶 / Ultra 共享大桶 / 普通 Gemini 大桶 / 3P 桶）耗尽时直接采信官方恢复时刻，比本地推算更可靠且不受上游改文案影响；`is_quota_depleted_signal` 统一判据大小写不敏感，保留 `check quota` 作为 1.5% 木桶触发入口并显式排除 TPM 瞬态限流（避免全池级联锁定，Fixes #3506）。(Fixes #3841)
+            -   **锁定源按硬配额优先排序**: 桶判据由「仅 weekly」放宽为「命中分组内任意桶 ≤ 1.5%」，weekly 耗尽则锁 weekly reset，仅当 weekly 健康、只有 5h 耗尽时才锁 5h 短周期——既避免 5h 一恢复就去试而 weekly 仍为 0 造成反复调度，也避免把几十分钟可恢复的账号锁上一整天。
+            -   **修复配额假满额盲区**: 处理上游对已耗尽模型直接省略 `remainingFraction` 的场景（原先 `unwrap_or(100)` 会读成满额），并在优先账号、会话粘性与 60s 复用窗口统一采用多键容错配额匹配。
+            -   **配额调度闭环**: 封堵全池 0 配额裸奔放行漏洞；修复 `accounts_with_positive_quota` 的 3P 路径缺 `available_models` 兜底导致单个 3P 模型 0% 就让整池命中 502 `no quota accounts` 门禁的问题；100% 原样透传上游配额到期 429 响应，禁止网关改写。
+            -   **消除 0 配额高优账号饥饿全池（优先级倒置死锁）**: 将 `select_with_p2c` 的配额过滤前置于优先级收敛，确立不变式「优先级只在具备该模型有效正配额的健康账号之间竞争」。修复蹬额度模式把临期账号设为 `priority=1` 后，该账号配额归零且空闲时会把其他满额账号剔除、进而 `return None` 报「无可用账号」的严重缺陷。(Ref #3840)
+            -   **模型路由：确立用户自定义映射最高优先级**: 自定义映射提升至物理最前位，高于官方热更新淘汰重定向；修复映射命中后被后置 `resolve_bare_tiered_model_route` 二次篡改为 `tiered`/`medium` 的缺陷；默认档位选择器翻转为 High 优先（实测 medium/tiered 在上游处于容量枯竭状态）；新增上游 503 `MODEL_CAPACITY_EXHAUSTED` 原地升档 High 自愈能力。
+            -   **超时契约：解除硬截断，前后端闭环**: 废除 135s/160s 超时硬编码截断（该值低于 medium 实测 p90 130.9s，会把本可成功的慢长请求反向判为 504 并引发重试风暴）；首字基准恢复 180s、多模态上限放宽至 270s；打通前端大请求体重放门限配置，消除后端硬编码 4MB 与前端 8MB 的双轨漂移。
+        -   **[蹬额度模式重构为最高调度优先级] (PR #3840, Thanks to @zepeng-jin)**:
+            -   **解除暴力禁用，改为优先级竞争**: 激活蹬额度模式时不再通过 `proxy_disabled = true` 挂起其他账号，改为把临期账号调度优先级提升至 `1`（默认 50）。彻底消除三重症结：既有会话因强制 Failover 导致 Prompt Caching 击穿、多并发压在唯一账号上触发 429、以及账号实体级禁用造成跨模型误伤。(PR #3840, Thanks to @zepeng-jin)
+            -   **并发弹性保底**: 老会话继续留在已绑定账号以保住缓存，新会话 100% 优先消耗临期账号，并发流量自动外溢至其他空闲账号。
+            -   **平滑自动恢复**: 待蹬账号周配额全部消耗（0%）或到达重置时间后，按 `originalPriorities` 精准恢复初始优先级；并保留旧版本残留挂起状态的容错清理逻辑。(PR #3840, Thanks to @zepeng-jin)
+
     *   **v5.0.3-beta.2 (2026-11-04)**:
         -   **[主端点偶发抖动沙箱降级抢占导致的端点毒化修复] (Fixes #3827, PR #3833, Thanks to @modded-soldier-9)**:
             -   **沙箱端点隔离与防抢占排序**: 在上游端点调度中引入沙箱端点探测与分区保护机制，确保 `daily-cloudcode-pa.sandbox.googleapis.com` 永不因统计权重抢占 Daily 主端点，根除跨区 IP 触发 400（User location is not supported）后导致的整号熔断与 504 误判问题。(Fixes #3827, PR #3833, Thanks to @modded-soldier-9)
