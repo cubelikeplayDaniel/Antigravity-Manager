@@ -887,6 +887,62 @@ mod tests {
 
         std::env::remove_var("ABV_DATA_DIR");
     }
+
+    #[test]
+    fn test_clear_account_forbidden_and_validation() {
+        let _guard = SHARED_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = TestDataDir::new();
+        std::env::set_var("ABV_DATA_DIR", dir.path());
+
+        let acc_id = "test-probe-recover-acc";
+        let path_buf = dir.path().clone();
+        create_account_file(&path_buf, acc_id, "recover@example.com");
+
+        // 构建带有 403 封禁与 validation 锁定的账号
+        let mut account = load_account(acc_id).unwrap();
+        account.proxy_disabled = true;
+        account.proxy_disabled_reason = Some("Forbidden (403): User not authorized".to_string());
+        account.validation_blocked = true;
+        account.validation_blocked_reason = Some("VALIDATION_REQUIRED".to_string());
+        let mut q = crate::models::QuotaData::new();
+        q.is_forbidden = true;
+        q.forbidden_reason = Some("Forbidden (403)".to_string());
+        account.quota = Some(q);
+        save_account(&account).unwrap();
+
+        let mut index = AccountIndex::new();
+        index.accounts.push(crate::models::AccountSummary {
+            id: acc_id.to_string(),
+            email: "recover@example.com".to_string(),
+            name: None,
+            disabled: false,
+            proxy_disabled: true,
+            protected_models: HashSet::new(),
+            created_at: 0,
+            last_used: 0,
+        });
+        save_account_index_in_dir(&path_buf, &index).unwrap();
+
+        // 执行测活成功自动解封
+        let recovered = clear_account_forbidden_and_validation(acc_id).unwrap();
+        assert!(recovered);
+
+        // 验证账号状态已彻底自愈
+        let updated = load_account(acc_id).unwrap();
+        assert!(!updated.proxy_disabled);
+        assert!(updated.proxy_disabled_reason.is_none());
+        assert!(!updated.validation_blocked);
+        assert!(updated.validation_blocked_reason.is_none());
+        assert!(!updated.quota.as_ref().unwrap().is_forbidden);
+        assert!(updated.quota.as_ref().unwrap().forbidden_reason.is_none());
+
+        // 再次调用对无锁账号返回 Ok(false)
+        assert!(!clear_account_forbidden_and_validation(acc_id).unwrap());
+
+        std::env::remove_var("ABV_DATA_DIR");
+    }
 }
 
 /// Global account write lock to prevent corruption during concurrent operations
@@ -3332,6 +3388,46 @@ pub fn clear_account_ban(account_id: &str) -> Result<bool, String> {
     crate::proxy::server::trigger_account_reload(account_id);
     crate::modules::logger::log_info(&format!(
         "✅ [Ban] Account {} recovered; ban state cleared",
+        account.email
+    ));
+    crate::modules::log_bridge::emit_accounts_refreshed();
+
+    Ok(true)
+}
+
+/// 测活探测成功后，自动解除账号的 403 封禁及验证锁定状态，恢复其在反代池中的调度资格。
+pub fn clear_account_forbidden_and_validation(account_id: &str) -> Result<bool, String> {
+    let _lock = ACCOUNT_INDEX_LOCK
+        .lock()
+        .map_err(|e| format!("failed_to_acquire_lock: {}", e))?;
+
+    let mut account = load_account(account_id)?;
+    let had_forbidden = account.quota.as_ref().is_some_and(|q| q.is_forbidden);
+    let had_validation = account.validation_blocked;
+    let had_proxy_disabled = account.proxy_disabled
+        && account.proxy_disabled_reason.as_ref().is_some_and(|r| {
+            r.starts_with("Forbidden (403)")
+                || r.contains("403 Forbidden")
+                || r.contains("VALIDATION_REQUIRED")
+        });
+
+    if !had_forbidden && !had_validation && !had_proxy_disabled {
+        return Ok(false);
+    }
+
+    clear_validation_blocked(&mut account);
+    save_account(&account)?;
+
+    if let Ok(mut index) = load_account_index() {
+        if let Some(summary) = index.accounts.iter_mut().find(|a| a.id == account_id) {
+            summary.proxy_disabled = account.proxy_disabled;
+            let _ = save_account_index(&index);
+        }
+    }
+
+    crate::proxy::server::trigger_account_reload(account_id);
+    crate::modules::logger::log_info(&format!(
+        "✅ [Probe] Account {} verified live and functional; cleared forbidden/validation locks",
         account.email
     ));
     crate::modules::log_bridge::emit_accounts_refreshed();

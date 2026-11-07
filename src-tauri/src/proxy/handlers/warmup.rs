@@ -447,6 +447,19 @@ pub async fn handle_warmup(
                     req.email, req.model, mapped_model, duration, is_retired
                 );
 
+                // 测活成功：若账号历史处于 403 / 验证锁定状态，自动清除锁定恢复反代
+                let resolved_acc_id = if !account_id.is_empty() {
+                    account_id.clone()
+                } else {
+                    crate::modules::account::find_account_id_by_email(&req.email)
+                        .unwrap_or_default()
+                };
+                if !resolved_acc_id.is_empty() {
+                    let _ = crate::modules::account::clear_account_forbidden_and_validation(
+                        &resolved_acc_id,
+                    );
+                }
+
                 // 记录成功预热请求到流量日志
                 let log_id = uuid::Uuid::new_v4().to_string();
                 let log = ProxyRequestLog {
