@@ -5,6 +5,9 @@ pub enum UpstreamClassification {
     RateLimited { retry_after: Option<u64> },
     /// 模型不存在或不支持（404 或 模型不存在文本错误）
     ModelNotFound,
+    /// 上游特定模型算力/集群容量耗尽（503/504 MODEL_CAPACITY_EXHAUSTED / No capacity available）
+    /// 属于该账号在该数据中心对该特定模型的临时无资源，必须单模型短熔断并立即换号，绝不能死粘或误降级
+    ModelCapacityExhausted,
     /// 瞬时服务器故障（500/503等，属于服务故障，只换号/退避，绝不打入账号冷却池）
     TransientServerError,
     /// 网关内部生成的自产生错误（如 All accounts limited / Token pool is empty 等，绝不自噬锁定）
@@ -78,14 +81,22 @@ impl UpstreamClassification {
             return UpstreamClassification::ImageProcessingError;
         }
 
-        // 5. 判定真正的限流 (仅限 429 和 529)
+        // 5. 判定上游特定模型算力/集群容量耗尽 (503/504 MODEL_CAPACITY_EXHAUSTED / No capacity available)
+        if crate::proxy::upstream::client::UpstreamClient::is_model_capacity_exhausted(
+            rquest::StatusCode::from_u16(status).unwrap_or(rquest::StatusCode::SERVICE_UNAVAILABLE),
+            body,
+        ) {
+            return UpstreamClassification::ModelCapacityExhausted;
+        }
+
+        // 6. 判定真正的限流 (仅限 429 和 529)
         if status == 429 || status == 529 {
             let delay = crate::proxy::upstream::retry::parse_retry_delay(body, retry_after_header)
                 .map(|ms| ms.saturating_add(999) / 1000);
             return UpstreamClassification::RateLimited { retry_after: delay };
         }
 
-        // 5. 瞬时故障 (500 / 503 等，绝非账号限流)
+        // 7. 瞬时故障 (500 / 503 等，绝非账号限流)
         if status == 500 || status == 503 {
             return UpstreamClassification::TransientServerError;
         }
@@ -113,12 +124,13 @@ impl UpstreamClassification {
         matches!(self, UpstreamClassification::RateLimited { .. })
     }
 
-    /// 这个账号不能再被当前会话粘住。401 / 403 / 404 / 429 / 529。
+    /// 这个账号不能再被当前会话粘住。401 / 403 / 404 / 429 / 529 / MODEL_CAPACITY_EXHAUSTED。
     pub fn abandons_sticky_account(&self) -> bool {
         matches!(
             self,
             UpstreamClassification::RateLimited { .. }
                 | UpstreamClassification::ModelNotFound
+                | UpstreamClassification::ModelCapacityExhausted
                 | UpstreamClassification::OtherClientError(401 | 403 | 404 | 429)
         )
     }
@@ -126,6 +138,11 @@ impl UpstreamClassification {
     /// 该分类是否为模型不存在
     pub fn is_model_not_found(&self) -> bool {
         matches!(self, UpstreamClassification::ModelNotFound)
+    }
+
+    /// 该分类是否为上游特定模型算力/集群容量耗尽
+    pub fn is_model_capacity_exhausted(&self) -> bool {
+        matches!(self, UpstreamClassification::ModelCapacityExhausted)
     }
 
     /// 该分类是否为思考签名失效/异构签名污染
@@ -196,12 +213,81 @@ pub fn apply_model_not_found(attempt: usize, pool_size: usize, mut mark: impl Fn
     attempt < pool_size
 }
 
+/// 503/504「单模型算力/容量耗尽」(MODEL_CAPACITY_EXHAUSTED) 的统一处置（协议无关）
+///
+/// 标记账号对**该模型**临时熔断 300s，并决定是否换号。
+/// 返回 `true` 表示账号池仍有其他候选，调用方应换号重试。
+pub fn apply_model_capacity_exhausted(
+    attempt: usize,
+    pool_size: usize,
+    mut mark: impl FnMut(),
+) -> bool {
+    mark();
+    attempt < pool_size
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    fn test_model_capacity_exhausted_classification_and_policy() {
+        let err_body = r#"{
+            "error": {
+                "code": 503,
+                "message": "No capacity available for model gemini-4-argon-high on the server",
+                "status": "UNAVAILABLE",
+                "details": [
+                    {
+                        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                        "reason": "MODEL_CAPACITY_EXHAUSTED",
+                        "domain": "cloudcode-pa.googleapis.com"
+                    }
+                ]
+            }
+        }"#;
+
+        let classification = UpstreamClassification::classify(503, err_body, None);
+        assert_eq!(
+            classification,
+            UpstreamClassification::ModelCapacityExhausted
+        );
+        assert!(classification.is_model_capacity_exhausted());
+        assert!(!classification.should_lock_account());
+        assert!(
+            classification.abandons_sticky_account(),
+            "ModelCapacityExhausted must abandon sticky account so session unbinds immediately"
+        );
+
+        let mut marked = false;
+        let can_rotate = apply_model_capacity_exhausted(0, 3, || {
+            marked = true;
+        });
+        assert!(marked);
+        assert!(can_rotate);
+
+        let mut marked_exhausted = false;
+        let pool_depleted = apply_model_capacity_exhausted(2, 2, || {
+            marked_exhausted = true;
+        });
+        assert!(marked_exhausted);
+        assert!(!pool_depleted);
+    }
+
+    #[test]
     fn test_abandons_sticky_account_policies() {
+        // 503 ModelCapacityExhausted 必须解除粘性绑定
+        let cap_exhausted = UpstreamClassification::classify(
+            503,
+            r#"{"error":{"message":"No capacity available for model gemini-4-argon-high"}}"#,
+            None,
+        );
+        assert_eq!(
+            cap_exhausted,
+            UpstreamClassification::ModelCapacityExhausted
+        );
+        assert!(cap_exhausted.abandons_sticky_account());
+
         // 404 ModelNotFound 必须解除粘性绑定，确保会话不会死粘在缺失该模型的账号上
         let not_found = UpstreamClassification::classify(404, "model not found", None);
         assert_eq!(not_found, UpstreamClassification::ModelNotFound);

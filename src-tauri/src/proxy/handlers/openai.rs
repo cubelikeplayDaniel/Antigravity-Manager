@@ -3365,6 +3365,56 @@ pub async fn handle_chat_completions(
             continue;
         }
 
+        if classification.abandons_sticky_account() {
+            token_manager.abandon_session(&affinity_key, &account_id);
+            tracing::debug!(
+                "[{}] Unbound session {} from account {} due to status {}",
+                trace_id,
+                affinity_key,
+                email,
+                status_code
+            );
+        }
+
+        if classification.is_model_capacity_exhausted() {
+            // [Pipeline Policy] 上游特定模型算力耗尽 (503 MODEL_CAPACITY_EXHAUSTED)
+            // 标记账号对该模型临时短熔断 300s，立即换号重试，绝不锁定其他健康模型
+            let can_rotate = crate::proxy::pipeline::policy::apply_model_capacity_exhausted(
+                attempt,
+                pool_size,
+                || token_manager.mark_model_unsupported(&account_id, &mapped_model, Some(300)),
+            );
+
+            if can_rotate {
+                tracing::warn!(
+                    "[{}] 上游报错模型算力耗尽 (503 MODEL_CAPACITY_EXHAUSTED)，已标记账号 {} 对模型 [{}] 临时熔断 300s，继续换号重试 ({}/{})...",
+                    trace_id, email, mapped_model, attempt + 1, pool_size
+                );
+                force_rotate = true;
+                continue;
+            }
+
+            tracing::warn!(
+                "[{}] Pipeline: Target model [{}] capacity exhausted on upstream. Pool exhausted without account-level lockout.",
+                trace_id, mapped_model
+            );
+            let dual_err = crate::proxy::handlers::common::build_dual_track_error(
+                "openai",
+                status_code,
+                &mapped_model,
+                &error_text,
+            );
+            return Ok((
+                StatusCode::from_u16(status_code).unwrap_or(StatusCode::SERVICE_UNAVAILABLE),
+                [
+                    ("X-Account-Email", email.as_str()),
+                    ("X-Mapped-Model", mapped_model.as_str()),
+                ],
+                Json(dual_err),
+            )
+                .into_response());
+        }
+
         if classification.is_model_not_found() {
             // [Pipeline Policy] 单模型临时熔断 + 是否换号的决策已下沉
             let can_rotate =
@@ -5525,6 +5575,61 @@ pub async fn handle_completions(
         }
 
         // [FIX Corrupted Image] 已由 `pipeline::auto_heal::try_auto_heal` 统一处理（见上）
+
+        if classification.abandons_sticky_account() {
+            token_manager.abandon_session(&affinity_key, &account_id);
+            tracing::debug!(
+                "[{}] Unbound session {} from account {} due to status {}",
+                trace_id,
+                affinity_key,
+                email,
+                status_code
+            );
+        }
+
+        if classification.is_model_capacity_exhausted() {
+            // [Pipeline Policy] 上游特定模型算力耗尽 (503 MODEL_CAPACITY_EXHAUSTED)
+            // 标记账号对该模型临时短熔断 300s，立即换号重试，绝不锁定其他健康模型
+            let can_rotate = crate::proxy::pipeline::policy::apply_model_capacity_exhausted(
+                attempt,
+                pool_size,
+                || token_manager.mark_model_unsupported(&account_id, &mapped_model, Some(300)),
+            );
+            if can_rotate {
+                tracing::warn!(
+                    "[{}] 上游报错模型算力耗尽 (503 MODEL_CAPACITY_EXHAUSTED)，已标记账号 {} 对模型 [{}] 临时熔断 300s，继续换号重试 ({}/{})...",
+                    trace_id, email, mapped_model, attempt + 1, pool_size
+                );
+                force_rotate = true;
+                continue;
+            }
+            tracing::warn!(
+                "[{}] Pipeline: Target model [{}] capacity exhausted on upstream. Pool exhausted without account-level lockout.",
+                trace_id, mapped_model
+            );
+            let protocol = if is_responses_api {
+                "responses"
+            } else {
+                "openai"
+            };
+            let dual_err = crate::proxy::handlers::common::build_dual_track_error(
+                protocol,
+                status_code,
+                &mapped_model,
+                &error_text,
+            );
+            return Response::builder()
+                .status(
+                    StatusCode::from_u16(status_code).unwrap_or(StatusCode::SERVICE_UNAVAILABLE),
+                )
+                .header("X-Account-Email", email.as_str())
+                .header("X-Mapped-Model", mapped_model.as_str())
+                .body(Body::from(
+                    serde_json::to_string(&dual_err).unwrap_or_default(),
+                ))
+                .unwrap()
+                .into_response();
+        }
 
         if classification.is_model_not_found() {
             // [Pipeline Policy] 单模型临时熔断 + 是否换号的决策已下沉（与 chat 路径同构）

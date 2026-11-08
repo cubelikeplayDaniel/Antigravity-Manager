@@ -2797,6 +2797,82 @@ pub async fn handle_messages(
             retry_after.as_deref(),
         );
 
+        // [Pipeline Auto-Heal] 503 升档 / 400 tool_choice 冲突 / 400 损坏图片：
+        // 三者均是对已转出的报文的原地修复，统一在同账号重试（换号只会重蹈覆车）。
+        if let Some(heal) = crate::proxy::pipeline::try_auto_heal(
+            &classification,
+            status_code,
+            &error_text,
+            &mut gemini_body,
+            &mut degraded_gemini_body,
+            &mut heal_flags,
+        ) {
+            force_rotate = false;
+            crate::proxy::stage_trace::StageTrace::alert_current(
+                "self_heal",
+                format!(
+                    "protocol=claude kind={} status={} account={}",
+                    heal.kind, status_code, email
+                ),
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(heal.delay_ms)).await;
+            continue;
+        }
+
+        if classification.abandons_sticky_account() {
+            token_manager.abandon_session(&affinity_key, &account_id);
+            debug!(
+                "[{}] Unbound session {} from account {} due to status {}",
+                trace_id, affinity_key, email, status_code
+            );
+        }
+
+        if classification.is_model_capacity_exhausted() {
+            // [Pipeline Policy] 上游特定模型算力耗尽 (503 MODEL_CAPACITY_EXHAUSTED)
+            // 标记账号对该模型临时短熔断 300s，立即换号重试，绝不锁定其他健康模型
+            let can_rotate = crate::proxy::pipeline::policy::apply_model_capacity_exhausted(
+                attempt,
+                pool_size,
+                || {
+                    token_manager.mark_model_unsupported(
+                        &account_id,
+                        &request_with_mapped.model,
+                        Some(300),
+                    )
+                },
+            );
+
+            if can_rotate {
+                tracing::warn!(
+                    "[{}] 上游报错模型算力耗尽 (503 MODEL_CAPACITY_EXHAUSTED)，已标记账号 {} 对模型 [{}] 临时熔断 300s，继续换号重试 ({}/{})...",
+                    trace_id, email, request_with_mapped.model, attempt + 1, pool_size
+                );
+                force_rotate = true;
+                continue;
+            }
+
+            tracing::warn!(
+                "[{}] Pipeline: Target model [{}] capacity exhausted on upstream. Pool exhausted without account-level lockout.",
+                trace_id, request_with_mapped.model
+            );
+            let dual_err = crate::proxy::handlers::common::build_dual_track_error(
+                "claude",
+                status_code,
+                &request_with_mapped.model,
+                &error_text,
+            );
+            return (
+                StatusCode::from_u16(status_code).unwrap_or(StatusCode::SERVICE_UNAVAILABLE),
+                [
+                    ("X-Account-Email", email.as_str()),
+                    ("X-Mapped-Model", request_with_mapped.model.as_str()),
+                    ("X-Upstream-Model", config.final_model.as_str()),
+                ],
+                Json(dual_err),
+            )
+                .into_response();
+        }
+
         if classification.is_model_not_found() {
             // [Pipeline Policy] 单模型临时熔断 + 是否换号的决策已下沉
             let can_rotate =
@@ -2811,7 +2887,7 @@ pub async fn handle_messages(
             if can_rotate {
                 tracing::warn!(
                     "[{}] 上游报错模型不可用 (HTTP {})，已标记账号 {} 对模型 [{}] 临时熔断，继续换号重试 ({}/{})...",
-                    trace_id, status_code, email, request_with_mapped.model, attempt, pool_size
+                    trace_id, status_code, email, request_with_mapped.model, attempt + 1, pool_size
                 );
                 force_rotate = true;
                 continue;
@@ -2849,35 +2925,6 @@ pub async fn handle_messages(
                     Some(&request_with_mapped.model),
                 )
                 .await;
-        }
-        if classification.abandons_sticky_account() {
-            token_manager.abandon_session(&affinity_key, &account_id);
-            debug!(
-                "[{}] Unbound session {} from account {} due to status {}",
-                trace_id, affinity_key, email, status_code
-            );
-        }
-
-        // [Pipeline Auto-Heal] 503 过载 / 400 tool_choice 冲突 / 400 损坏图片：
-        // 三者均是对已转出的 Gemini 报文的原地修复，统一在同账号重试（换号只会重蹈覆车）。
-        if let Some(heal) = crate::proxy::pipeline::try_auto_heal(
-            &classification,
-            status_code,
-            &error_text,
-            &mut gemini_body,
-            &mut degraded_gemini_body,
-            &mut heal_flags,
-        ) {
-            force_rotate = false;
-            crate::proxy::stage_trace::StageTrace::alert_current(
-                "self_heal",
-                format!(
-                    "protocol=claude kind={} status={} account={}",
-                    heal.kind, status_code, email
-                ),
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(heal.delay_ms)).await;
-            continue;
         }
 
         // 4. 处理 400 错误（Thinking 签名失效 / 块顺序错误）

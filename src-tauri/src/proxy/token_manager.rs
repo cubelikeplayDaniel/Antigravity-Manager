@@ -4501,6 +4501,8 @@ impl TokenManager {
                                 && !self
                                     .rate_limit_tracker
                                     .is_rate_limited(&t.account_id, Some(&normalized_target))
+                                && !self.is_model_unsupported(&t.account_id, target_model)
+                                && !self.is_model_unsupported(&t.account_id, &normalized_target)
                                 && !(quota_protection_enabled
                                     && t.protected_models.contains(&normalized_target))
                                 && !self.qos_guardian.is_jailed_or_probing(&t.account_id)
@@ -4526,6 +4528,8 @@ impl TokenManager {
                                     && !self
                                         .rate_limit_tracker
                                         .is_rate_limited(&t.account_id, Some(&normalized_target))
+                                    && !self.is_model_unsupported(&t.account_id, target_model)
+                                    && !self.is_model_unsupported(&t.account_id, &normalized_target)
                                     && !(quota_protection_enabled
                                         && t.protected_models.contains(&normalized_target))
                                     && !self.qos_guardian.is_jailed_or_probing(&t.account_id)
@@ -4554,6 +4558,10 @@ impl TokenManager {
                             && (bound_token.validation_blocked_until == 0
                                 || bound_token.validation_blocked_until
                                     > chrono::Utc::now().timestamp());
+                        let is_model_unsupported = self
+                            .is_model_unsupported(&bound_token.account_id, target_model)
+                            || self
+                                .is_model_unsupported(&bound_token.account_id, &normalized_target);
 
                         if is_validation_blocked {
                             tracing::warn!(
@@ -4567,6 +4575,15 @@ impl TokenManager {
                                 bound_token.email
                             );
                             self.session_accounts.remove(sid);
+                        } else if is_model_unsupported {
+                            tracing::info!(
+                                "Sticky Session: Bound account {} is circuit-broken/unsupported for model {} [{}], unbinding and switching.",
+                                bound_token.email,
+                                target_model,
+                                normalized_target
+                            );
+                            self.session_accounts.remove(sid);
+                            attempted.insert(bound_token.account_id.clone());
                         } else if reset_sec > 0 {
                             // 【修复 Issue #284】立即解绑并切换账号，不再阻塞等待
                             // 原因：阻塞等待会导致并发请求时客户端 socket 超时 (UND_ERR_SOCKET)
@@ -4728,9 +4745,22 @@ impl TokenManager {
                                             < found_eff_priority
                                 });
 
+                                let is_last_model_unsupported = self
+                                    .is_model_unsupported(&found.account_id, target_model)
+                                    || self.is_model_unsupported(
+                                        &found.account_id,
+                                        &normalized_target,
+                                    );
+
                                 let is_qos_jailed =
                                     self.qos_guardian.is_jailed_or_probing(&found.account_id);
-                                if is_qos_jailed {
+                                if is_last_model_unsupported {
+                                    tracing::debug!(
+                                        "60s Window: Last account {} is circuit-broken/unsupported for model {}, skipping reuse",
+                                        found.email, target_model
+                                    );
+                                    attempted.insert(account_id.clone());
+                                } else if is_qos_jailed {
                                     tracing::debug!(
                                         "60s Window: Last account {} is JAILED in QoS Guardian, skipping reuse",
                                         found.email
@@ -4752,9 +4782,13 @@ impl TokenManager {
                                         found.email, last_quota, normalized_target, max_alt_quota
                                     );
                                     attempted.insert(account_id.clone());
-                                } else if !self
-                                    .is_rate_limited(&found.account_id, Some(&normalized_target))
-                                    .await
+                                } else if !is_last_model_unsupported
+                                    && !self
+                                        .is_rate_limited(
+                                            &found.account_id,
+                                            Some(&normalized_target),
+                                        )
+                                        .await
                                     && !(quota_protection_enabled
                                         && found.protected_models.contains(&normalized_target))
                                 {
@@ -10850,6 +10884,80 @@ mod tests {
             "配额差距 < 25% 时不得频繁跳号损失前缀缓存"
         );
         assert_eq!(email, "acc1@test.com");
+    }
+
+    #[tokio::test]
+    async fn test_sticky_session_auto_unbinding_when_model_circuit_broken() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let accounts_dir = temp_dir.path().join("accounts");
+        std::fs::create_dir_all(&accounts_dir).unwrap();
+
+        let acc1_id = "acc_capacity_exhausted";
+        let acc2_id = "acc_healthy_argon";
+
+        let acc1_path = accounts_dir.join(format!("{}.json", acc1_id));
+        let acc2_path = accounts_dir.join(format!("{}.json", acc2_id));
+
+        std::fs::write(&acc1_path, r#"{"disabled":false}"#).unwrap();
+        std::fs::write(&acc2_path, r#"{"disabled":false}"#).unwrap();
+
+        let manager = TokenManager::new(temp_dir.path().to_path_buf());
+
+        let target_model = "gemini-4-argon";
+        let norm_target =
+            crate::proxy::common::model_mapping::normalize_to_standard_id(target_model)
+                .unwrap_or_else(|| target_model.to_string());
+
+        let mut quotas1 = HashMap::new();
+        quotas1.insert(norm_target.clone(), 100);
+
+        let mut quotas2 = HashMap::new();
+        quotas2.insert(norm_target.clone(), 100);
+
+        let mut token1 = create_test_token("acc1@test.com", Some("PRO"), 1.0, None, Some(100));
+        token1.account_id = acc1_id.to_string();
+        token1.account_path = acc1_path;
+        token1.model_quotas = quotas1;
+
+        let mut token2 = create_test_token("acc2@test.com", Some("PRO"), 1.0, None, Some(100));
+        token2.account_id = acc2_id.to_string();
+        token2.account_path = acc2_path;
+        token2.model_quotas = quotas2;
+
+        manager.tokens.insert(acc1_id.to_string(), token1);
+        manager.tokens.insert(acc2_id.to_string(), token2);
+
+        let session_id = "agent-session-argon-circuit-broken";
+        // 初始将会话绑定至 acc1
+        manager.commit_session(session_id, acc1_id);
+        assert_eq!(
+            manager.session_accounts.get(session_id).unwrap().as_str(),
+            acc1_id
+        );
+
+        // 模拟上游报错 503 MODEL_CAPACITY_EXHAUSTED，对 acc1 的 gemini-4-argon-high 实施 300s 熔断
+        manager.mark_model_unsupported(acc1_id, "gemini-4-argon-high", Some(300));
+        assert!(manager.is_model_unsupported(acc1_id, "gemini-4-argon"));
+        assert!(manager.is_model_unsupported(acc1_id, "gemini-4-argon-high"));
+        assert!(!manager.is_model_unsupported(acc2_id, "gemini-4-argon"));
+
+        // 获取 Token：因为 acc1 的 gemini-4-argon 处于模型级临时熔断状态，
+        // 粘性会话必须立即解绑 acc1，并故障转移切换至健康的 acc2！
+        let excluded = HashSet::new();
+        let (_token, _project_id, email, selected_id, _wait) = manager
+            .get_token_filtered("chat", false, Some(session_id), target_model, &excluded)
+            .await
+            .expect("Token acquisition must failover when bound account has model-breaker active");
+
+        assert_eq!(selected_id, acc2_id, "必须自动选择未熔断的账号 acc2");
+        assert_eq!(email, "acc2@test.com");
+
+        // 验证会话已从 acc1 解除，并 commit 绑定至新健康的 acc2
+        assert_eq!(
+            manager.session_accounts.get(session_id).unwrap().as_str(),
+            acc2_id,
+            "会话必须被自动原子绑定至健康的账号 acc2"
+        );
     }
 
     #[tokio::test]

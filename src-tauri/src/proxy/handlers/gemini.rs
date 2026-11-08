@@ -1073,6 +1073,46 @@ pub async fn handle_generate(
             );
         }
 
+        if classification.is_model_capacity_exhausted() {
+            // [Pipeline Policy] 上游特定模型算力耗尽 (503 MODEL_CAPACITY_EXHAUSTED)
+            // 标记账号对该模型临时短熔断 300s，立即换号重试，绝不锁定其他健康模型
+            let can_rotate = crate::proxy::pipeline::policy::apply_model_capacity_exhausted(
+                attempt,
+                pool_size,
+                || token_manager.mark_model_unsupported(&account_id, &mapped_model, Some(300)),
+            );
+
+            if can_rotate {
+                tracing::warn!(
+                    "[Gemini] 上游报错模型算力耗尽 (503 MODEL_CAPACITY_EXHAUSTED)，已标记账号 {} 对模型 [{}] 临时熔断 300s，继续换号重试 ({}/{})...",
+                    email, mapped_model, attempt + 1, pool_size
+                );
+                force_rotate = true;
+                continue;
+            }
+
+            tracing::warn!(
+                "[Gemini] Target model [{}] capacity exhausted on upstream. Pool exhausted without account-level lockout.",
+                mapped_model
+            );
+            let dual_err = crate::proxy::handlers::common::build_dual_track_error(
+                "gemini",
+                status_code,
+                &mapped_model,
+                &error_text,
+            );
+            return Ok((
+                StatusCode::from_u16(status_code).unwrap_or(StatusCode::SERVICE_UNAVAILABLE),
+                [
+                    ("X-Account-Email", email.as_str()),
+                    ("X-Mapped-Model", mapped_model.as_str()),
+                    ("X-Upstream-Model", config.final_model.as_str()),
+                ],
+                Json(dual_err),
+            )
+                .into_response());
+        }
+
         if classification.is_model_not_found() {
             // [Pipeline Policy] 单模型临时熔断 + 是否换号的决策已下沉；这里只构造协议响应。
             let can_rotate =

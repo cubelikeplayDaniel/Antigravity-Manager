@@ -188,9 +188,10 @@ pub fn try_auto_heal(
         rquest::StatusCode::from_u16(status_code)
             .unwrap_or(rquest::StatusCode::SERVICE_UNAVAILABLE),
         error_text,
-    ) && !flags.retried_with_capacity_promoted
-    {
-        if InboundThinkingPipeline::try_promote_to_high_capacity(body) {
+    ) {
+        if !flags.retried_with_capacity_promoted
+            && InboundThinkingPipeline::try_promote_to_high_capacity(body)
+        {
             flags.retried_with_capacity_promoted = true;
             *degraded = Some(body.clone());
             tracing::warn!(
@@ -201,6 +202,10 @@ pub fn try_auto_heal(
                 delay_ms: 50,
             });
         }
+        // [CRITICAL FIX] 若已是 HIGH 算力或无法升档，说明该账号对该模型已彻底无容量可用。
+        // 绝对严禁穿透到下方的 try_degrade_thinking_budget 反向降级为 -medium 模型并原地死等挂起！
+        // 必须直接返回 None，将控制权交给外层执行即时换号 (Account Rotation) 与会话解绑！
+        return None;
     }
 
     // 1. 上游过载：降级思考预算，避免被调度到高算力集群继续排队
@@ -866,5 +871,58 @@ mod tests {
             &mut flags,
         );
         assert!(again.is_none());
+    }
+
+    #[test]
+    fn test_auto_heal_refuses_thinking_budget_degrade_on_capacity_exhausted_high_model() {
+        let err_body = r#"{
+            "error": {
+                "code": 503,
+                "message": "No capacity available for model gemini-4-argon-high on the server",
+                "status": "UNAVAILABLE",
+                "details": [
+                    {
+                        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                        "reason": "MODEL_CAPACITY_EXHAUSTED",
+                        "domain": "cloudcode-pa.googleapis.com"
+                    }
+                ]
+            }
+        }"#;
+
+        let classification =
+            crate::proxy::pipeline::UpstreamClassification::classify(503, err_body, None);
+
+        let mut body = json!({
+            "model": "gemini-4-argon-high",
+            "generationConfig": {
+                "maxOutputTokens": 65536,
+                "thinkingConfig": {
+                    "includeThoughts": true,
+                    "thinkingLevel": "HIGH"
+                }
+            },
+            "contents": [{
+                "role": "user",
+                "parts": [{ "text": "hello" }]
+            }]
+        });
+
+        let mut degraded = None;
+        let mut flags = AutoHealFlags::default();
+        let out = try_auto_heal(
+            &classification,
+            503,
+            err_body,
+            &mut body,
+            &mut degraded,
+            &mut flags,
+        );
+
+        // [CRITICAL ASSERTION] 当 gemini-4-argon-high 遭遇 503 MODEL_CAPACITY_EXHAUSTED 时，
+        // 既然无法再升档，绝不允许伪自愈为不存在的 gemini-4-argon-medium 并原地重试！
+        // 必须返回 None，以便外层立即触发账号轮换！
+        assert_eq!(out, None);
+        assert_eq!(body["model"], "gemini-4-argon-high");
     }
 }
