@@ -381,9 +381,14 @@ pub fn build_token_error_headers<'a>(
 /// - 网关账号池全员冷却（`is_internal_gateway_exhaustion`）返回 `429 TOO_MANY_REQUESTS`；
 /// - 其余无可用账号或刷新失败返回 `503 SERVICE_UNAVAILABLE`。
 pub fn resolve_token_error_status(error_text: &str) -> axum::http::StatusCode {
-    if crate::proxy::pipeline::policy::UpstreamClassification::is_internal_gateway_exhaustion(
-        &error_text.to_lowercase(),
-    ) {
+    let lower = error_text.to_lowercase();
+    let is_exhausted = crate::proxy::pipeline::policy::UpstreamClassification::is_internal_gateway_exhaustion(
+        &lower,
+    );
+    if is_exhausted
+        && !lower.contains("no accounts available")
+        && !lower.contains("no available accounts")
+    {
         axum::http::StatusCode::TOO_MANY_REQUESTS
     } else {
         axum::http::StatusCode::SERVICE_UNAVAILABLE
