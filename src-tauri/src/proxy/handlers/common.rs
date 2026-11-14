@@ -381,9 +381,15 @@ pub fn build_token_error_headers<'a>(
 /// - 网关账号池全员冷却（`is_internal_gateway_exhaustion`）返回 `429 TOO_MANY_REQUESTS`；
 /// - 其余无可用账号或刷新失败返回 `503 SERVICE_UNAVAILABLE`。
 pub fn resolve_token_error_status(error_text: &str) -> axum::http::StatusCode {
-    if crate::proxy::pipeline::policy::UpstreamClassification::is_internal_gateway_exhaustion(
-        &error_text.to_lowercase(),
-    ) {
+    let lower = error_text.to_lowercase();
+    let is_exhausted =
+        crate::proxy::pipeline::policy::UpstreamClassification::is_internal_gateway_exhaustion(
+            &lower,
+        );
+    if is_exhausted
+        && !lower.contains("no accounts available")
+        && !lower.contains("no available accounts")
+    {
         axum::http::StatusCode::TOO_MANY_REQUESTS
     } else {
         axum::http::StatusCode::SERVICE_UNAVAILABLE
@@ -1150,7 +1156,14 @@ mod retry_after_tests {
     #[test]
     fn test_build_dual_track_error_internal_limited() {
         let raw_err = "All accounts limited. Wait 30s.";
-        let claude_res = build_dual_track_error("claude", 429, "gemini-2.5-flash", raw_err);
+        let claude_res = build_dual_track_error_with_ua_and_lang(
+            "claude",
+            429,
+            "gemini-2.5-flash",
+            raw_err,
+            None,
+            Some("zh"),
+        );
         assert_eq!(claude_res["error"]["code"], "all_accounts_limited");
         assert_eq!(
             claude_res["error"]["gateway_error"]["source"],
@@ -1160,6 +1173,24 @@ mod retry_after_tests {
             .as_str()
             .unwrap()
             .contains("网关调度受限"));
+
+        let en_res = build_dual_track_error_with_ua_and_lang(
+            "claude",
+            429,
+            "gemini-2.5-flash",
+            raw_err,
+            None,
+            Some("en"),
+        );
+        assert_eq!(en_res["error"]["code"], "all_accounts_limited");
+        assert!(en_res["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Gateway Scheduling Limited"));
+
+        let default_res = build_dual_track_error("claude", 429, "gemini-2.5-flash", raw_err);
+        assert_eq!(default_res["error"]["code"], "all_accounts_limited");
+        assert!(default_res["error"]["message"].is_string());
     }
 
     #[test]
@@ -1193,7 +1224,14 @@ mod retry_after_tests {
     fn test_build_dual_track_error_network_error() {
         let raw_err =
             "HTTP request failed at https://alkalicognition.googleapis.com: failed to connect";
-        let res = build_dual_track_error("claude", 502, "claude-sonnet-4-6", raw_err);
+        let res = build_dual_track_error_with_ua_and_lang(
+            "claude",
+            502,
+            "claude-sonnet-4-6",
+            raw_err,
+            None,
+            Some("zh"),
+        );
         assert_eq!(res["error"]["code"], "upstream_network_error");
         assert_eq!(res["error"]["gateway_error"]["is_server_error"], false);
         assert_eq!(res["error"]["is_server_error"], false);
@@ -1201,6 +1239,26 @@ mod retry_after_tests {
             .as_str()
             .unwrap()
             .contains("非服务端故障"));
+
+        let en_res = build_dual_track_error_with_ua_and_lang(
+            "claude",
+            502,
+            "claude-sonnet-4-6",
+            raw_err,
+            None,
+            Some("en"),
+        );
+        assert_eq!(en_res["error"]["code"], "upstream_network_error");
+        assert_eq!(en_res["error"]["gateway_error"]["is_server_error"], false);
+        assert_eq!(en_res["error"]["is_server_error"], false);
+        assert!(en_res["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Non-Server Fault"));
+
+        let default_res = build_dual_track_error("claude", 502, "claude-sonnet-4-6", raw_err);
+        assert_eq!(default_res["error"]["code"], "upstream_network_error");
+        assert!(default_res["error"]["message"].is_string());
     }
 
     #[test]
@@ -1243,7 +1301,6 @@ mod retry_after_tests {
 
     #[test]
     fn test_determine_retry_strategy_adaptive_google_multi_day_quota_exhaustion() {
-        use reqwest::StatusCode;
         use std::time::Duration;
 
         let google_exhausted_body = r#"{
