@@ -382,9 +382,10 @@ pub fn build_token_error_headers<'a>(
 /// - 其余无可用账号或刷新失败返回 `503 SERVICE_UNAVAILABLE`。
 pub fn resolve_token_error_status(error_text: &str) -> axum::http::StatusCode {
     let lower = error_text.to_lowercase();
-    let is_exhausted = crate::proxy::pipeline::policy::UpstreamClassification::is_internal_gateway_exhaustion(
-        &lower,
-    );
+    let is_exhausted =
+        crate::proxy::pipeline::policy::UpstreamClassification::is_internal_gateway_exhaustion(
+            &lower,
+        );
     if is_exhausted
         && !lower.contains("no accounts available")
         && !lower.contains("no available accounts")
