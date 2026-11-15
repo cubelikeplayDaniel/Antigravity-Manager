@@ -3077,9 +3077,20 @@ mod tests {
             "逗号续写厂牌漏网（pass2b 断句后脱离身份句作用域）: {cleaned}"
         );
         assert!(cleaned.contains(OFFICIAL_ANTIGRAVITY_IDENTITY));
+
+        // 官方身份句带有非连词从句续写时，竞品厂牌在身份句作用域内被正确归一化为 Google
+        let raw_cont = format!(
+            "{}, operating for Baidu clients.",
+            OFFICIAL_ANTIGRAVITY_IDENTITY.trim_end_matches('.')
+        );
+        let cleaned_cont = PromptSanitizer::normalize_system_identity(&raw_cont);
         assert!(
-            cleaned.contains("powered by Google"),
-            "厂牌未归一化为 Google: {cleaned}"
+            !cleaned_cont.contains("Baidu"),
+            "官方身份续写从句中的竞品厂牌未被替换: {cleaned_cont}"
+        );
+        assert!(
+            cleaned_cont.contains("operating for Google clients"),
+            "厂牌未归一化为 Google: {cleaned_cont}"
         );
 
         // 末尾无句号的同形态：续写从句落在尾部无标点切片上，同样必须继承身份归属
